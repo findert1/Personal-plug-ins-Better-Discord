@@ -48,7 +48,33 @@ const CSS = `
     user-select: text; pointer-events: auto;
 }
 .sr-panel input:focus, .sr-panel select:focus { outline: none; border-color: var(--brand-500, #5865f2); }
-.sr-emoji { width: 48px; text-align: center; }
+.sr-panel button.sr-emoji-btn {
+    width: 48px; height: 36px; padding: 0; font-size: 20px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--background-tertiary, #1e1f22);
+    border: 1px solid var(--background-modifier-accent, #4e5058);
+}
+.sr-panel button.sr-emoji-btn.sr-empty { opacity: 0.4; }
+.sr-emoji-img { width: 22px; height: 22px; object-fit: contain; }
+.sr-picker {
+    display: flex; flex-direction: column; gap: 8px; padding: 8px;
+    background: var(--background-secondary, #2b2d31);
+    border: 1px solid var(--background-modifier-accent, #4e5058);
+    border-radius: 8px;
+}
+.sr-picker-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.sr-panel .sr-picker-tabs button, .sr-panel .sr-picker-grid button {
+    background: transparent; padding: 4px; font-size: 20px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+}
+.sr-panel .sr-picker-tabs button { opacity: 0.5; }
+.sr-panel .sr-picker-tabs button.sr-active { opacity: 1; background: var(--background-modifier-selected, #404249); }
+.sr-panel .sr-picker-grid button:hover, .sr-panel .sr-picker-tabs button:hover { background: var(--background-modifier-hover, #393c41); }
+.sr-picker-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 2px;
+    max-height: 220px; overflow-y: auto;
+}
+.sr-picker-empty { color: var(--text-muted, #949ba4); padding: 8px; }
 .sr-text { flex: 1; }
 .sr-interval { width: 80px; }
 .sr-panel input[type="checkbox"] { width: 16px; height: 16px; padding: 0; margin: 0; cursor: pointer; }
@@ -210,8 +236,83 @@ module.exports = class StatusRotator {
         return panel;
     }
 
+    // Ouvre le sélecteur d'emoji sous la ligne du statut, ou le ferme s'il y est déjà
+    toggleEmojiPicker(row, current, onSelect) {
+        const wasOpen = this.picker?.row === row;
+        this.picker?.element.remove();
+        this.picker = null;
+        if (wasOpen) return;
+
+        const data = loadEmojiData();
+        const element = el("div", "sr-picker");
+        const close = () => {
+            element.remove();
+            this.picker = null;
+        };
+        const select = char => {
+            onSelect(char);
+            close();
+        };
+
+        const grid = el("div", "sr-picker-grid");
+        const showEmojis = list => {
+            grid.replaceChildren(...list.map(emoji => {
+                const button = el("button");
+                button.title = emoji.name ? `:${emoji.name}:` : emoji.char;
+                button.append(renderEmoji(emoji.char));
+                button.addEventListener("click", () => select(emoji.char));
+                return button;
+            }));
+            if (!list.length) grid.append(el("div", "sr-picker-empty", "No emoji found"));
+        };
+
+        const tabs = el("div", "sr-picker-tabs");
+        const selectCategory = (category, tab) => {
+            for (const other of tabs.children) other.classList.remove("sr-active");
+            tab.classList.add("sr-active");
+            showEmojis(category.emojis);
+        };
+        for (const category of data.categories) {
+            const tab = el("button");
+            tab.title = category.id;
+            tab.append(renderEmoji(category.icon));
+            tab.addEventListener("click", () => {
+                if (search) search.value = "";
+                selectCategory(category, tab);
+            });
+            tabs.append(tab);
+        }
+
+        let search = null;
+        if (data.searchable) {
+            search = el("input");
+            search.placeholder = "Search emoji";
+            search.addEventListener("input", () => {
+                const query = search.value.trim().toLowerCase();
+                if (!query) return selectCategory(data.categories[0], tabs.firstChild);
+                for (const tab of tabs.children) tab.classList.remove("sr-active");
+                const all = data.categories.flatMap(c => c.emojis);
+                showEmojis(all.filter(e => e.names.some(n => n.includes(query))).slice(0, 200));
+            });
+            element.append(search);
+        }
+
+        element.append(tabs, grid);
+        if (current) {
+            const remove = el("button", "sr-secondary", "Remove emoji");
+            remove.addEventListener("click", () => select(""));
+            element.append(remove);
+        }
+
+        selectCategory(data.categories[0], tabs.firstChild);
+        row.after(element);
+        this.picker = { row, element };
+        search?.focus();
+    }
+
     renderPanel(panel) {
         panel.replaceChildren();
+        this.picker = null;
 
         // Intervalle
         const intervalRow = el("div", "sr-row");
@@ -243,10 +344,14 @@ module.exports = class StatusRotator {
         this.settings.statuses.forEach((status, i) => {
             const row = el("div", "sr-row");
 
-            const emoji = el("input", "sr-emoji");
-            emoji.placeholder = "😀";
-            emoji.value = status.emoji ?? "";
-            emoji.addEventListener("change", () => { status.emoji = emoji.value.trim(); this.saveSettings(); });
+            const emoji = el("button", "sr-emoji-btn");
+            emoji.title = "Choose an emoji";
+            fillEmojiButton(emoji, status.emoji);
+            emoji.addEventListener("click", () => this.toggleEmojiPicker(row, status.emoji, char => {
+                status.emoji = char;
+                this.saveSettings();
+                fillEmojiButton(emoji, char);
+            }));
 
             const text = el("input", "sr-text");
             text.placeholder = "Status text";
@@ -288,6 +393,79 @@ module.exports = class StatusRotator {
         panel.append(actions);
     }
 };
+
+// --- Emojis ---
+
+// Catégories d'emojis de Discord et l'icône de leur onglet
+const EMOJI_CATEGORIES = {
+    people: "😀", nature: "🐻", food: "🍔", activity: "⚽",
+    travel: "🚗", objects: "💡", symbols: "❤️", flags: "🏁"
+};
+
+// Utilisée si le module d'emojis de Discord est introuvable
+const FALLBACK_EMOJIS = ("😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😍 🥰 😘 😋 😛 😜 🤪 😎 🤓 🥳 😏 😴 🤔 🤫 🙄 😬 😮 😱 "
+    + "😭 😤 😡 🤯 🥶 🥵 🤒 😈 💀 👻 👽 🤖 💩 👋 👍 👎 👏 🙏 💪 ✌️ 🤞 👀 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 ✨ ⭐ 🔥 "
+    + "💯 💤 💬 🎉 🎁 🎮 🎧 🎵 🎶 🎬 📺 📚 ✏️ 💻 🖥️ 📱 ☕ 🍕 🍔 🍟 🍿 🍩 🍪 🍺 🍷 🌙 ☀️ 🌈 🌧️ ❄️ 🌸 🌴 🐱 🐶 "
+    + "🦊 🐼 🐸 🦄 🚀 ✈️ 🚗 🏠 🏖️ ⚽ 🏀 🏆 💼 💰 🔔 🔒 ⚠️ ✅ ❌ ❓ ❗").split(" ");
+
+let emojiData = null;
+
+function loadEmojiData() {
+    if (emojiData) return emojiData;
+
+    // Module interne de Discord qui contient tous les emojis unicode
+    const filter = m => typeof m?.getByCategory === "function" && typeof m?.getByName === "function";
+    const module = BdApi.Webpack.getModule(filter) ?? BdApi.Webpack.getModule(filter, { searchExports: true });
+
+    const categories = [];
+    for (const [id, icon] of Object.entries(EMOJI_CATEGORIES)) {
+        let list;
+        try { list = module?.getByCategory(id); } catch { list = null; }
+        if (!list?.length) continue;
+        categories.push({
+            id,
+            icon,
+            emojis: list.map(e => ({
+                char: e.surrogates,
+                name: e.uniqueName ?? e.names?.[0] ?? "",
+                names: e.names ?? [],
+                url: e.url
+            }))
+        });
+    }
+
+    if (!categories.length) {
+        categories.push({
+            id: "common",
+            icon: "😀",
+            emojis: FALLBACK_EMOJIS.map(char => ({ char, name: "", names: [] }))
+        });
+    }
+
+    const byChar = new Map();
+    for (const category of categories) {
+        for (const emoji of category.emojis) byChar.set(emoji.char, emoji);
+    }
+
+    emojiData = { categories, byChar, searchable: categories.some(c => c.emojis.some(e => e.names.length)) };
+    return emojiData;
+}
+
+// Affiche l'emoji avec l'image Discord si disponible (Windows n'affiche pas les drapeaux en texte)
+function renderEmoji(char) {
+    const url = loadEmojiData().byChar.get(char)?.url;
+    if (!url) return el("span", "", char);
+    const img = el("img", "sr-emoji-img");
+    img.src = url;
+    img.alt = char;
+    img.loading = "lazy";
+    return img;
+}
+
+function fillEmojiButton(button, char) {
+    button.replaceChildren(renderEmoji(char || "😀"));
+    button.classList.toggle("sr-empty", !char);
+}
 
 function el(tag, className = "", text = "") {
     const node = document.createElement(tag);
