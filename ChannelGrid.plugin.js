@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.1.0
+ * @version 1.1.1
  */
 
 const DEFAULT_SETTINGS = {
@@ -16,6 +16,8 @@ const MIN_WIDTH = 240;
 const MAX_WIDTH = 640;
 const VIEW_CHANNEL = 1n << 10n;
 const VOICE_TYPES = new Set([2, 13]);
+// Textes de la barre « nouveaux messages » de Discord (anglais et français)
+const NATIVE_BAR_TEXT = /^(new (unreads?|mentions?)|nouveaux messages non lus|nouvelles? mentions?)$/i;
 
 // Icônes des types de salons (texte, vocal, annonces, scène, forum, média)
 const SVG_OPEN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">`;
@@ -52,8 +54,8 @@ const CSS = `
 
 .cg-root { position: relative; display: flex; flex-direction: column; min-height: 0; color: var(--channels-default, #949ba4); }
 
-[data-cg-mode="grid"] [class*="unreadMentionsIndicator"], [data-cg-mode="grid"] [class*="unreadMentionsBar"],
-[data-cg-sidebar] [class*="unreadMentionsIndicator"], [data-cg-sidebar] [class*="unreadMentionsBar"] { display: none !important; }
+/* Barre « nouveaux messages » de la liste Discord : on la remplace par la nôtre */
+[data-cg-sidebar] [data-cg-native-bar] { display: none !important; }
 .cg-jump {
     position: absolute; left: 50%; transform: translateX(-50%); z-index: 2;
     border: none; border-radius: 14px; padding: 6px 14px; cursor: pointer; white-space: nowrap;
@@ -279,8 +281,38 @@ module.exports = class ChannelGrid {
         }
         if (this.settings.view === "grid") sidebar?.setAttribute("data-cg-sidebar", "");
         else sidebar?.removeAttribute("data-cg-sidebar");
+        this.hideNativeBars();
 
         if (this.dirty || this.renderedGuild !== guildId) this.render(guildId);
+    }
+
+    // La classe de la barre « nouveaux messages » de Discord change trop souvent : on la repère
+    // à son texte, hors de notre grille, de la liste cachée et de la liste des serveurs
+    hideNativeBars() {
+        if (!this.sidebar || this.settings.view !== "grid") return;
+        const walker = document.createTreeWalker(this.sidebar, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+            acceptNode: node => {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return NATIVE_BAR_TEXT.test(node.data.trim()) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+                }
+                return node === this.root || node.id === "channels" || node.matches('[class*="guilds"], [data-cg-native-bar]')
+                    ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+            }
+        });
+
+        const texts = [];
+        while (walker.nextNode()) texts.push(walker.currentNode);
+        for (const text of texts) {
+            // On cache le premier parent positionné (la pastille entière), sinon le parent direct
+            let bar = text.parentElement;
+            for (let node = bar; node && !node.contains(this.root) && !node.contains(this.sidebar.querySelector('[class*="guilds"]')); node = node.parentElement) {
+                if (getComputedStyle(node).position !== "static") {
+                    bar = node;
+                    break;
+                }
+            }
+            bar.setAttribute("data-cg-native-bar", "");
+        }
     }
 
     // Retire nos attributs de la barre latérale, ce qui réaffiche la liste normale de Discord
@@ -608,11 +640,18 @@ module.exports = class ChannelGrid {
         e.stopPropagation();
 
         const { clientX, clientY, screenX, screenY } = e;
-        const target = member
-            ? await this.findNative(() => findNativeUser(member.dataset.user))
-            : await this.findNative(() => document.querySelector(`#channels [data-list-item-id="channels___${tile.dataset.channel}"]`));
+        const find = member
+            ? () => findNativeUser(member.dataset.user)
+            : () => document.querySelector(`#channels [data-list-item-id="channels___${tile.dataset.channel}"]`);
+        let target = await this.findNative(find);
+        let expanded = null;
+        if (!target) {
+            expanded = await this.expandCategoryOf((member ?? tile).closest("[data-channel]")?.dataset.channel);
+            if (expanded) target = await this.findNative(find);
+        }
 
         if (!target) {
+            this.collapseAfterMenu(expanded);
             BdApi.UI.showToast("ChannelGrid: right-click menu unavailable here, try List view", { type: "warning" });
             return;
         }
@@ -620,6 +659,38 @@ module.exports = class ChannelGrid {
             bubbles: true, cancelable: true, view: window,
             clientX, clientY, screenX, screenY, button: 2, buttons: 2
         }));
+        this.collapseAfterMenu(expanded);
+    }
+
+    // Un salon d'une catégorie réduite dans la liste Discord n'y existe pas : on déplie
+    // la catégorie le temps du menu, en cliquant dessus comme le ferait l'utilisateur.
+    // Renvoie l'id de la catégorie dépliée, s'il y en a une
+    async expandCategoryOf(channelId) {
+        const parentId = this.stores.ChannelStore?.getChannel?.(channelId)?.parent_id;
+        if (!parentId) return null;
+        const category = await this.findNative(() => findNativeCategory(parentId));
+        if (!category) return null;
+
+        category.click();
+        await nextFrame();
+        await nextFrame();
+        return parentId;
+    }
+
+    // Replie la catégorie une fois le menu clic droit fermé
+    collapseAfterMenu(parentId) {
+        if (!parentId) return;
+        const collapse = async () => (await this.findNative(() => findNativeCategory(parentId)))?.click();
+        const isOpen = () => document.querySelector('[class*="contextMenu"], [role="menu"]');
+        let opened = false;
+        const started = Date.now();
+        const timer = setInterval(() => {
+            if (isOpen()) opened = true;
+            else if (opened || Date.now() - started > 1000) {
+                clearInterval(timer);
+                collapse();
+            }
+        }, 150);
     }
 
     // La liste Discord n'affiche que les salons visibles à l'écran : on la fait défiler
@@ -732,6 +803,22 @@ function findNativeUser(userId) {
     }
     const avatar = document.querySelector(`#channels img[src*="/${userId}/"]`);
     return avatar?.closest('[class*="voiceUser"]') ?? avatar;
+}
+
+// Élément cliquable d'une catégorie dans la liste Discord
+function findNativeCategory(categoryId) {
+    const item = document.querySelector(`#channels [data-list-item-id="channels___${categoryId}"]`);
+    if (item) return item.closest('[role="button"]') ?? item;
+
+    // Sinon on la retrouve via les props React des éléments de la liste
+    for (const node of document.querySelectorAll('#channels [role="button"]')) {
+        let fiber = BdApi.ReactUtils.getInternalInstance(node);
+        for (let depth = 0; fiber && depth < 8; depth++, fiber = fiber.return) {
+            const props = fiber.memoizedProps;
+            if (props?.channel?.id === categoryId && props.channel.type === 4) return node;
+        }
+    }
+    return null;
 }
 
 function nextFrame() {
