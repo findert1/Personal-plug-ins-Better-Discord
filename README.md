@@ -35,7 +35,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 ## ChannelGrid
 
 - Text channels are shown as tiles, grouped by category. Click a category name to fold it.
-- Voice channels are full-width cards listing who is connected, with speaking rings, mute/deafen/camera/live indicators and the game they are playing. Click a member to open their profile.
+- Voice channels are full-width cards listing who is connected, with their server tag, speaking rings, mute/deafen/camera/live indicators and the game they are playing. Click a member to open their profile.
 - Unread channels are highlighted, mentions get a red badge, and "New unreads" / "New mentions" buttons jump to unread channels outside the view.
 - Right-click a channel or a voice member to get Discord's usual context menu.
 - A Grid / List switch at the top brings back Discord's normal list at any time.

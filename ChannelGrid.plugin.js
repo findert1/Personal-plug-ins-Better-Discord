@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 const DEFAULT_SETTINGS = {
@@ -144,12 +144,19 @@ const CSS = `
     padding: 2px 4px; margin-left: -4px; border-radius: 6px; cursor: pointer;
 }
 .cg-member:hover { color: var(--interactive-hover, #dbdee1); background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 10%, transparent); }
-.cg-member img {
+.cg-member .cg-avatar {
     width: 22px; height: 22px; border-radius: 50%; flex: none;
     box-shadow: 0 0 0 2px transparent; transition: box-shadow .1s;
 }
-.cg-member.cg-speaking img { box-shadow: 0 0 0 2px var(--status-positive, #23a55a); }
-.cg-member-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cg-member.cg-speaking .cg-avatar { box-shadow: 0 0 0 2px var(--status-positive, #23a55a); }
+.cg-member-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cg-member-icons { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.cg-tag {
+    display: flex; align-items: center; gap: 3px; flex: none; padding: 0 4px; height: 16px; border-radius: 4px;
+    font-size: 10px; font-weight: 700; color: var(--text-normal, #dbdee1);
+    background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 16%, transparent);
+}
+.cg-tag img { width: 12px; height: 12px; }
 .cg-member svg { width: 14px; height: 14px; flex: none; color: var(--status-danger, #da373c); }
 .cg-member svg.cg-neutral { color: inherit; opacity: .7; }
 .cg-game { display: flex; flex: none; }
@@ -442,8 +449,9 @@ module.exports = class ChannelGrid {
         ].join("");
         return `
             <div class="cg-member" data-user="${escapeHtml(user.id)}">
-                <img src="${escapeHtml(getAvatar(user, guildId))}" alt="">
-                <span class="cg-member-name">${escapeHtml(name)}</span>${icons}
+                <img class="cg-avatar" src="${escapeHtml(getAvatar(user, guildId))}" alt="">
+                <span class="cg-member-name">${escapeHtml(name)}</span>${renderGuildTag(user)}
+                <span class="cg-member-icons">${icons}</span>
             </div>`;
     }
 
@@ -728,6 +736,17 @@ function findNativeUser(userId) {
 
 function nextFrame() {
     return new Promise(resolve => requestAnimationFrame(resolve));
+}
+
+// Tag de serveur affiché à côté du pseudo (avec son petit badge), comme dans Discord
+function renderGuildTag(user) {
+    const guild = user?.primaryGuild ?? user?.primary_guild;
+    if (!guild?.tag || guild.identityEnabled === false) return "";
+    const guildId = guild.identityGuildId ?? guild.identity_guild_id;
+    const badge = guild.badge && guildId
+        ? `<img src="https://cdn.discordapp.com/guild-tag-badges/${escapeHtml(guildId)}/${escapeHtml(guild.badge)}.png?size=16" alt="">`
+        : "";
+    return `<span class="cg-tag">${badge}${escapeHtml(guild.tag)}</span>`;
 }
 
 function getAvatar(user, guildId) {
