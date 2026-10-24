@@ -36,8 +36,11 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 
 - Text channels are shown as tiles, grouped by category. Click a category name to fold it.
 - Voice channels are full-width cards listing who is connected, with their server tag, speaking rings, mute/deafen/camera/live indicators and the game they are playing. Click a member to open their profile.
-- Unread channels are highlighted, mentions get a red badge, and "New unreads" / "New mentions" buttons jump to unread channels outside the view.
-- Right-click a channel or a voice member to get Discord's usual context menu.
+- The server's boost goal and Discord's shortcuts (Browse Channels, Events, Members...) are shown at the top of the grid.
+- Unread channels are highlighted, mentions get a red badge, and "New unreads" / "New mentions" buttons jump to unread channels outside the view. Discord's own unread bar is hidden so they don't overlap.
+- Right-click a channel or a voice member to get Discord's usual context menu, even in categories folded in the normal list.
+- Works with server banners: the grid starts right under the banner.
+- Hidden channels added by ShowHiddenChannels appear with a lock icon.
 - A Grid / List switch at the top brings back Discord's normal list at any time.
 - Settings: hide muted channels, show or hide voice members.
 

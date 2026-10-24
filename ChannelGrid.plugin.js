@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.1.1
+ * @version 1.0.0
  */
 
 const DEFAULT_SETTINGS = {
@@ -34,6 +34,7 @@ const CHEVRON = `${SVG_OPEN}<path d="m6 9 6 6 6-6"/></svg>`;
 const MIC_OFF = `${SVG_OPEN}<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 11 4.6M12 17.5V21M3 3l18 18"/></svg>`;
 const DEAF = `${SVG_OPEN}<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/><path d="M3 3l18 18"/></svg>`;
 const GAMEPAD = `${SVG_OPEN}<rect x="2" y="7" width="20" height="11" rx="5"/><path d="M7 11v3M5.5 12.5h3M16 12h.01M18 14h.01"/></svg>`;
+const LOCK = `${SVG_OPEN}<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
 const CAMERA = `${SVG_OPEN}<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/></svg>`;
 
 const STORES = [
@@ -50,7 +51,8 @@ const CSS = `
     opacity: 0 !important; pointer-events: none !important; z-index: -1;
 }
 [data-cg-mode="grid"] > .cg-root { flex: 1 1 auto; }
-[data-cg-mode="list"] > .cg-root { flex: none; }
+/* En liste, nos boutons glissent sous la bannière, par-dessus la liste de Discord */
+[data-cg-mode="list"] > .cg-root { flex: none; z-index: 2; }
 
 .cg-root { position: relative; display: flex; flex-direction: column; min-height: 0; color: var(--channels-default, #949ba4); }
 
@@ -99,6 +101,27 @@ const CSS = `
 .cg-cat-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cg-cat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--interactive-active, #fff); flex: none; }
 
+.cg-boost {
+    margin-top: 6px; padding: 7px 10px; border-radius: 8px; cursor: pointer;
+    background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 7%, transparent);
+    font-size: 12px; font-weight: 600; color: var(--interactive-hover, #dbdee1);
+}
+.cg-boost:hover { background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 14%, transparent); }
+.cg-boost-text { display: flex; justify-content: space-between; gap: 8px; }
+.cg-boost-text span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cg-boost-bar { margin-top: 6px; height: 4px; border-radius: 2px; overflow: hidden; background: rgba(0,0,0,.3); }
+.cg-boost-bar > div { height: 100%; background: linear-gradient(90deg, #ff73fa, #b473f8); }
+.cg-shortcuts { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; margin-top: 6px; }
+.cg-shortcut {
+    display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0;
+    padding: 6px 10px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 7%, transparent);
+    transition: background .12s, color .12s;
+}
+.cg-shortcut:hover { background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 14%, transparent); color: var(--interactive-hover, #dbdee1); }
+.cg-shortcut svg { width: 16px; height: 16px; flex: none; }
+.cg-shortcut-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .cg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; align-items: start; }
 
 .cg-tile {
@@ -125,6 +148,9 @@ const CSS = `
     display: flex; align-items: center; justify-content: center;
 }
 .cg-count { flex: none; font-size: 11px; opacity: .8; }
+.cg-lock { display: flex; flex: none; }
+.cg-line .cg-lock svg, .cg-vc-head .cg-lock svg { width: 13px; height: 13px; opacity: .7; }
+.cg-tile.cg-hidden, .cg-vc.cg-hidden { opacity: .6; }
 
 .cg-voice-list { display: flex; flex-direction: column; gap: 6px; }
 .cg-grid + .cg-voice-list { margin-top: 6px; }
@@ -221,6 +247,9 @@ module.exports = class ChannelGrid {
         // Discord recrée la liste des salons quand on change de serveur : on se réinsère à chaque fois
         this.observer = new MutationObserver(() => this.schedule());
         this.observer.observe(document.getElementById("app-mount") ?? document.body, { childList: true, subtree: true });
+        // La hauteur de l'en-tête (bannière) change sans modifier le DOM
+        this.headerObserver = new ResizeObserver(() => this.schedule());
+        this.onListScroll = () => this.schedule();
 
         this.dirty = true;
         this.schedule();
@@ -282,6 +311,15 @@ module.exports = class ChannelGrid {
         if (this.settings.view === "grid") sidebar?.setAttribute("data-cg-sidebar", "");
         else sidebar?.removeAttribute("data-cg-sidebar");
         this.hideNativeBars();
+        this.syncHeader(host, channels);
+
+        const shortcuts = this.readShortcuts(channels);
+        const shortcutsKey = JSON.stringify(shortcuts);
+        if (shortcutsKey !== this.shortcutsKey) {
+            this.shortcutsKey = shortcutsKey;
+            this.shortcuts = shortcuts;
+            this.dirty = true;
+        }
 
         if (this.dirty || this.renderedGuild !== guildId) this.render(guildId);
     }
@@ -315,8 +353,75 @@ module.exports = class ChannelGrid {
         }
     }
 
+    // Sur les serveurs avec bannière, l'image est posée en absolu sous le nom du serveur et
+    // dépasse de son bloc : on décale nos éléments jusqu'en bas de la bannière.
+    // - En grille, la liste cachée est gardée tout en haut, car Discord réduit la bannière dès
+    //   qu'elle défile, et la grille est décalée par une marge.
+    // - En liste, la liste de Discord laisse déjà un espace vide sous la bannière : on y fait
+    //   glisser nos boutons sans changer leur place dans la page.
+    syncHeader(host, channels) {
+        const grid = this.settings.view === "grid";
+        if (grid && !this.menuBusy && channels.scrollTop) channels.scrollTop = 0;
+
+        const header = host.querySelector("header")?.parentElement;
+        if (header !== this.header) {
+            this.headerObserver?.disconnect();
+            this.header = header;
+            if (header) this.headerObserver.observe(header);
+        }
+        // La bannière disparaît quand la liste de Discord défile
+        if (channels !== this.scrolledList) {
+            this.scrolledList?.removeEventListener("scroll", this.onListScroll);
+            this.scrolledList = channels;
+            channels.addEventListener("scroll", this.onListScroll, { passive: true });
+        }
+
+        const rootTop = this.root.getBoundingClientRect().top - (this.headerOffset ?? 0);
+        let bottom = rootTop;
+        if (header?.matches('[class*="bannerVisible"]')) {
+            const limit = host.getBoundingClientRect().top + host.clientHeight / 2;
+            for (const node of [header, ...header.querySelectorAll("*")]) {
+                const rect = node.getBoundingClientRect();
+                if (rect.width && rect.height && rect.bottom <= limit) bottom = Math.max(bottom, rect.bottom);
+            }
+        }
+        const offset = Math.max(0, Math.round(bottom - rootTop));
+        this.headerOffset = offset;
+        this.root.style.marginTop = grid && offset ? `${offset}px` : "";
+        this.root.style.transform = !grid && offset ? `translateY(${offset}px)` : "";
+    }
+
+    // Haut de la liste Discord : la barre d'objectif de boost et les raccourcis
+    // (Chercher des salons, Événements, Membres...). On garde l'ancien relevé pendant
+    // qu'un clic droit fait défiler la liste cachée, sinon ils disparaîtraient un instant
+    readShortcuts(channels) {
+        if (this.menuBusy || this.settings.view !== "grid") return this.shortcuts ?? { items: [] };
+
+        let boost = null;
+        const boostBar = findNativeBoost();
+        if (boostBar) {
+            const texts = [...boostBar.querySelectorAll('[class*="textContentContainer"]')]
+                .map(node => node.textContent.replace(/\s+/g, " ").trim());
+            const progress = boostBar.querySelector('[class*="progress_"]:not([class*="progressContainer"])');
+            boost = { label: texts[0] ?? "", count: texts[1] ?? "", progress: progress?.style.width ?? "" };
+        }
+
+        const items = [];
+        for (const target of channels.querySelectorAll('li [role="button"][id^="channels-"][aria-label]')) {
+            const row = target.closest("li");
+            items.push({ label: target.getAttribute("aria-label"), icon: row.querySelector("svg")?.outerHTML ?? "" });
+        }
+        return { boost, items };
+    }
+
     // Retire nos attributs de la barre latérale, ce qui réaffiche la liste normale de Discord
     detach() {
+        this.headerObserver?.disconnect();
+        this.header = null;
+        this.scrolledList?.removeEventListener("scroll", this.onListScroll);
+        this.scrolledList = null;
+        this.headerOffset = 0;
+        this.root.style.marginTop = this.root.style.transform = "";
         this.host?.removeAttribute("data-cg-mode");
         this.sidebar?.removeAttribute("data-cg-sidebar");
         this.host = this.sidebar = null;
@@ -350,7 +455,7 @@ module.exports = class ChannelGrid {
                     <button data-view="list" class="${isGrid ? "" : "cg-active"}">☰ List</button>
                 </div>
             </div>
-            <div class="cg-scroll">${isGrid ? this.renderCategories(guildId) : ""}</div>
+            <div class="cg-scroll">${isGrid ? this.renderShortcuts() + this.renderCategories(guildId) : ""}</div>
             <button class="cg-jump cg-jump-up" data-jump="up" hidden></button>
             <button class="cg-jump cg-jump-down" data-jump="down" hidden></button>`;
 
@@ -365,12 +470,26 @@ module.exports = class ChannelGrid {
         }
     }
 
+    renderShortcuts() {
+        const { boost, items = [] } = this.shortcuts ?? {};
+        const boostHtml = boost ? `
+            <div class="cg-boost" data-boost title="${escapeHtml(`${boost.label} ${boost.count}`)}">
+                <div class="cg-boost-text"><span>${escapeHtml(boost.label)}</span><span>${escapeHtml(boost.count)} ›</span></div>
+                ${boost.progress ? `<div class="cg-boost-bar"><div style="width: ${escapeHtml(boost.progress)}"></div></div>` : ""}
+            </div>` : "";
+        const itemsHtml = items.length ? `<div class="cg-shortcuts">${items.map(item => `
+            <div class="cg-shortcut" data-shortcut="${escapeHtml(item.label)}" title="${escapeHtml(item.label)}">
+                ${item.icon}<span class="cg-shortcut-name">${escapeHtml(item.label)}</span>
+            </div>`).join("")}</div>` : "";
+        return boostHtml + itemsHtml;
+    }
+
     renderCategories(guildId) {
         const { GuildChannelStore, ChannelStore } = this.stores;
         const lists = GuildChannelStore.getChannels(guildId) ?? {};
         const channels = [...(lists.SELECTABLE ?? []), ...(lists.VOCAL ?? [])]
             .map(entry => entry.channel)
-            .filter(channel => channel && ICONS[channel.type] && this.canView(channel));
+            .filter(channel => channel && ICONS[channel.type] && (this.canView(channel) || channel.isHidden?.()));
 
         const selected = this.getSelectedId();
 
@@ -436,11 +555,13 @@ module.exports = class ChannelGrid {
         if (state.selected) classes.push("cg-selected");
         if (state.unread && !state.muted) classes.push("cg-unread");
         if (state.muted) classes.push("cg-muted");
+        if (state.hidden) classes.push("cg-hidden");
 
+        const lock = state.hidden ? `<span class="cg-lock" title="Hidden Channel">${LOCK}</span>` : "";
         const badge = state.mentions ? `<span class="cg-badge">${state.mentions > 99 ? "99+" : state.mentions}</span>` : "";
         return `
             <div class="${classes.join(" ")}" data-channel="${escapeHtml(channel.id)}" title="${escapeHtml(channel.name)}">
-                <div class="cg-line">${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${badge}</div>
+                <div class="cg-line">${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${badge}${lock}</div>
             </div>`;
     }
 
@@ -451,6 +572,8 @@ module.exports = class ChannelGrid {
         if (state.connected) classes.push("cg-connected");
         if (voiceUsers.length) classes.push("cg-occupied");
         if (state.muted && !voiceUsers.length) classes.push("cg-muted");
+        if (state.hidden) classes.push("cg-hidden");
+        const lock = state.hidden ? `<span class="cg-lock" title="Hidden Channel">${LOCK}</span>` : "";
 
         const limit = channel.userLimit || channel.user_limit;
         const count = voiceUsers.length
@@ -464,7 +587,7 @@ module.exports = class ChannelGrid {
         return `
             <div class="${classes.join(" ")}">
                 <div class="cg-vc-head" data-channel="${escapeHtml(channel.id)}" title="${escapeHtml(channel.name)}">
-                    ${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${count}
+                    ${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${count}${lock}
                 </div>
                 ${members}
             </div>`;
@@ -532,6 +655,7 @@ module.exports = class ChannelGrid {
             muted,
             voiceUsers,
             selected: channel.id === selected,
+            hidden: !this.canView(channel),
             connected: channel.id === this.stores.SelectedChannelStore?.getVoiceChannelId?.(),
             unread: Boolean(ReadStateStore?.hasUnread?.(channel.id)),
             mentions: ReadStateStore?.getMentionCount?.(channel.id) ?? 0
@@ -626,6 +750,17 @@ module.exports = class ChannelGrid {
             return;
         }
 
+        // Les raccourcis cliquent sur le vrai bouton de la liste Discord
+        if (e.target.closest("[data-boost]")) {
+            findNativeBoost()?.click();
+            return;
+        }
+        const shortcut = e.target.closest("[data-shortcut]");
+        if (shortcut) {
+            findNativeShortcut(shortcut.dataset.shortcut)?.click();
+            return;
+        }
+
         const tile = e.target.closest("[data-channel]");
         if (tile) this.openChannel(tile.dataset.channel);
     }
@@ -640,6 +775,7 @@ module.exports = class ChannelGrid {
         e.stopPropagation();
 
         const { clientX, clientY, screenX, screenY } = e;
+        this.menuBusy = true;
         const find = member
             ? () => findNativeUser(member.dataset.user)
             : () => document.querySelector(`#channels [data-list-item-id="channels___${tile.dataset.channel}"]`);
@@ -677,10 +813,14 @@ module.exports = class ChannelGrid {
         return parentId;
     }
 
-    // Replie la catégorie une fois le menu clic droit fermé
+    // Une fois le menu clic droit fermé : replie la catégorie dépliée et remet la liste
+    // cachée tout en haut (sinon Discord masque la bannière du serveur)
     collapseAfterMenu(parentId) {
-        if (!parentId) return;
-        const collapse = async () => (await this.findNative(() => findNativeCategory(parentId)))?.click();
+        const collapse = async () => {
+            if (parentId) (await this.findNative(() => findNativeCategory(parentId)))?.click();
+            this.menuBusy = false;
+            this.schedule();
+        };
         const isOpen = () => document.querySelector('[class*="contextMenu"], [role="menu"]');
         let opened = false;
         const started = Date.now();
@@ -721,7 +861,7 @@ module.exports = class ChannelGrid {
         if (!channel) return;
 
         // Un clic sur un vocal le rejoint, sauf si on y est déjà : on ouvre alors sa vue
-        if (VOICE_TYPES.has(channel.type) && this.voiceActions
+        if (VOICE_TYPES.has(channel.type) && this.voiceActions && this.canView(channel)
             && this.stores.SelectedChannelStore?.getVoiceChannelId?.() !== channelId) {
             this.voiceActions.selectVoiceChannel(channelId);
             return;
@@ -803,6 +943,20 @@ function findNativeUser(userId) {
     }
     const avatar = document.querySelector(`#channels img[src*="/${userId}/"]`);
     return avatar?.closest('[class*="voiceUser"]') ?? avatar;
+}
+
+// Barre « Objectif de Boost » et raccourcis du haut de la liste Discord
+function findNativeBoost() {
+    return document.querySelector('#channels [role="button"]:has([class*="progressContainer"])');
+}
+
+function findNativeShortcut(label) {
+    for (const target of document.querySelectorAll('#channels li [role="button"][id^="channels-"][aria-label]')) {
+        if (target.getAttribute("aria-label") !== label) continue;
+        // Le clic est géré par le lien voisin de la zone de focus
+        return target.closest("li").querySelector('[class*="link"]') ?? target;
+    }
+    return null;
 }
 
 // Élément cliquable d'une catégorie dans la liste Discord
