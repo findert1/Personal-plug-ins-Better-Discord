@@ -2,7 +2,7 @@
  * @name StatusRotator
  * @author findert
  * @description Automatically rotates between multiple custom statuses at a set interval.
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 // Minimum entre deux changements, pour ne pas se faire rate-limit par Discord
