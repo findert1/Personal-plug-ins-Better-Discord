@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 const DEFAULT_SETTINGS = {
@@ -818,6 +818,10 @@ module.exports = class ChannelGrid {
     collapseAfterMenu(parentId) {
         const collapse = async () => {
             if (parentId) (await this.findNative(() => findNativeCategory(parentId)))?.click();
+            // Remet la liste cachée à sa taille normale
+            const scroller = document.getElementById("channels");
+            scroller?.style.removeProperty("bottom");
+            scroller?.style.removeProperty("height");
             this.menuBusy = false;
             this.schedule();
         };
@@ -841,6 +845,17 @@ module.exports = class ChannelGrid {
 
         let node = find();
         if (node) return node;
+
+        // En grille, la liste cachée est agrandie à toute sa hauteur : Discord affiche alors
+        // tous ses éléments sans qu'elle défile, ce qui garde la bannière du serveur affichée
+        if (this.settings.view === "grid") {
+            scroller.style.setProperty("bottom", "auto", "important");
+            scroller.style.setProperty("height", `${scroller.scrollHeight}px`, "important");
+            await nextFrame();
+            await nextFrame();
+            node = find();
+            if (node) return node;
+        }
 
         const start = scroller.scrollTop;
         scroller.scrollTop = 0;
