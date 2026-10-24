@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.1.0
+ * @version 1.1.1
  */
 
 const DEFAULT_SETTINGS = {
@@ -17,6 +17,9 @@ const MAX_WIDTH = 640;
 const VIEW_CHANNEL = 1n << 10n;
 const VOICE_TYPES = new Set([2, 13]);
 const SCROLL_METHODS = ["scrollTo", "scroll", "scrollBy"];
+// Menus clic droit et cartes de profil de Discord
+const MENU_SELECTOR = '[class*="contextMenu"], [role="menu"]';
+const POPOUT_SELECTOR = '[class*="layerContainer"] [role="dialog"]';
 // Textes de la barre « nouveaux messages » de Discord (anglais et français)
 const NATIVE_BAR_TEXT = /^(new (unreads?|mentions?)|nouveaux messages non lus|nouvelles? mentions?)$/i;
 
@@ -766,7 +769,7 @@ module.exports = class ChannelGrid {
             return;
         }
         if (member) {
-            this.openProfile(member.dataset.user);
+            this.openPopout(member);
             return;
         }
 
@@ -795,16 +798,10 @@ module.exports = class ChannelGrid {
         e.stopPropagation();
 
         const { clientX, clientY, screenX, screenY } = e;
-        this.menuBusy = true;
         const find = member
             ? () => findNativeUser(member.dataset.user)
             : () => document.querySelector(`#channels [data-list-item-id="channels___${tile.dataset.channel}"]`);
-        let target = await this.findNative(find);
-        let expanded = null;
-        if (!target) {
-            expanded = await this.expandCategoryOf((member ?? tile).closest("[data-channel]")?.dataset.channel);
-            if (expanded) target = await this.findNative(find);
-        }
+        const { target, expanded } = await this.findNativeTarget(member ?? tile, find);
 
         if (!target) {
             this.collapseAfterMenu(expanded);
@@ -816,6 +813,49 @@ module.exports = class ChannelGrid {
             clientX, clientY, screenX, screenY, button: 2, buttons: 2
         }));
         this.collapseAfterMenu(expanded);
+    }
+
+    // Cherche l'élément de la liste Discord cachée qui correspond à un élément de la grille,
+    // en dépliant sa catégorie si elle est réduite dans la liste
+    async findNativeTarget(element, find) {
+        this.menuBusy = true;
+        let target = await this.findNative(find);
+        let expanded = null;
+        if (!target) {
+            expanded = await this.expandCategoryOf(element.closest("[data-channel]")?.dataset.channel);
+            if (expanded) target = await this.findNative(find);
+        }
+        return { target, expanded };
+    }
+
+    // Ouvre la carte de profil d'un membre en vocal : on clique sur lui dans la liste Discord
+    // cachée. Discord place la carte d'après la position de cet élément : on lui fait croire
+    // qu'il est à la place du membre dans la grille, le temps que la carte reste ouverte
+    async openPopout(member) {
+        const userId = member.dataset.user;
+        const { target, expanded } = await this.findNativeTarget(member, () => findNativeUser(userId));
+        if (!target) {
+            this.collapseAfterMenu(expanded);
+            this.openProfile(userId);
+            return;
+        }
+
+        const clickable = target.matches('[role="button"]') ? target : target.querySelector('[role="button"]') ?? target;
+        const anchored = [];
+        for (let node = clickable; node && node.id !== "channels"; node = node.parentElement) {
+            node.getBoundingClientRect = () => member.getBoundingClientRect();
+            anchored.push(node);
+            if (node === target.closest("li")) break;
+        }
+        for (const node of target.querySelectorAll("*")) {
+            node.getBoundingClientRect = () => member.getBoundingClientRect();
+            anchored.push(node);
+        }
+
+        clickable.click();
+        this.collapseAfterMenu(expanded, POPOUT_SELECTOR, () => {
+            for (const node of anchored) delete node.getBoundingClientRect;
+        });
     }
 
     // Un salon d'une catégorie réduite dans la liste Discord n'y existe pas : on déplie
@@ -833,10 +873,11 @@ module.exports = class ChannelGrid {
         return parentId;
     }
 
-    // Une fois le menu clic droit fermé : replie la catégorie dépliée et remet la liste
-    // cachée tout en haut (sinon Discord masque la bannière du serveur)
-    collapseAfterMenu(parentId) {
+    // Une fois le menu clic droit (ou la carte de profil) fermé : replie la catégorie dépliée
+    // et remet la liste cachée tout en haut (sinon Discord masque la bannière du serveur)
+    collapseAfterMenu(parentId, openSelector = MENU_SELECTOR, onClose) {
         const collapse = async () => {
+            onClose?.();
             if (parentId) (await this.findNative(() => findNativeCategory(parentId)))?.click();
             // Remet la liste cachée à sa taille normale
             const scroller = document.getElementById("channels");
@@ -845,7 +886,7 @@ module.exports = class ChannelGrid {
             this.menuBusy = false;
             this.schedule();
         };
-        const isOpen = () => document.querySelector('[class*="contextMenu"], [role="menu"]');
+        const isOpen = () => document.querySelector(openSelector);
         let opened = false;
         const started = Date.now();
         const timer = setInterval(() => {
