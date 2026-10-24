@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.0.1
+ * @version 1.0.2
  */
 
 const DEFAULT_SETTINGS = {
@@ -16,6 +16,7 @@ const MIN_WIDTH = 240;
 const MAX_WIDTH = 640;
 const VIEW_CHANNEL = 1n << 10n;
 const VOICE_TYPES = new Set([2, 13]);
+const SCROLL_METHODS = ["scrollTo", "scroll", "scrollBy"];
 // Textes de la barre « nouveaux messages » de Discord (anglais et français)
 const NATIVE_BAR_TEXT = /^(new (unreads?|mentions?)|nouveaux messages non lus|nouvelles? mentions?)$/i;
 
@@ -361,7 +362,13 @@ module.exports = class ChannelGrid {
     //   glisser nos boutons sans changer leur place dans la page.
     syncHeader(host, channels) {
         const grid = this.settings.view === "grid";
-        if (grid && !this.menuBusy && channels.scrollTop) channels.scrollTop = 0;
+        if (grid) this.lockScroll(channels);
+        else this.unlockScroll();
+        if (grid && !this.menuBusy && channels.scrollTop) {
+            this.allowScroll = true;
+            channels.scrollTop = 0;
+            this.allowScroll = false;
+        }
 
         const header = host.querySelector("header")?.parentElement;
         if (header !== this.header) {
@@ -420,6 +427,7 @@ module.exports = class ChannelGrid {
         this.header = null;
         this.scrolledList?.removeEventListener("scroll", this.onListScroll);
         this.scrolledList = null;
+        this.unlockScroll();
         this.headerOffset = 0;
         this.root.style.marginTop = this.root.style.transform = "";
         this.host?.removeAttribute("data-cg-mode");
@@ -857,18 +865,51 @@ module.exports = class ChannelGrid {
             if (node) return node;
         }
 
-        const start = scroller.scrollTop;
-        scroller.scrollTop = 0;
-        for (let i = 0; i < 80; i++) {
-            await nextFrame();
-            await nextFrame();
-            node = find();
-            if (node) return node;
-            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) break;
-            scroller.scrollTop += Math.max(100, scroller.clientHeight * 0.8);
+        this.allowScroll = true;
+        try {
+            const start = scroller.scrollTop;
+            scroller.scrollTop = 0;
+            for (let i = 0; i < 80; i++) {
+                await nextFrame();
+                await nextFrame();
+                node = find();
+                if (node) return node;
+                if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) break;
+                scroller.scrollTop += Math.max(100, scroller.clientHeight * 0.8);
+            }
+            scroller.scrollTop = start;
+            return null;
+        } finally {
+            this.allowScroll = false;
         }
-        scroller.scrollTop = start;
-        return null;
+    }
+
+    // En grille, Discord ne doit pas faire défiler sa liste cachée (par exemple jusqu'au salon
+    // sélectionné) : il replierait la bannière et la grille sauterait. Seul le plugin peut le faire
+    lockScroll(list) {
+        if (list === this.lockedList) return;
+        this.unlockScroll();
+        const allowed = () => this.allowScroll;
+        const scrollTop = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+        Object.defineProperty(list, "scrollTop", {
+            configurable: true,
+            get() { return scrollTop.get.call(this); },
+            set(value) { if (allowed()) scrollTop.set.call(this, value); }
+        });
+        for (const name of SCROLL_METHODS) {
+            list[name] = function (...args) {
+                if (allowed()) Element.prototype[name].apply(this, args);
+            };
+        }
+        this.lockedList = list;
+    }
+
+    unlockScroll() {
+        const list = this.lockedList;
+        if (!list) return;
+        delete list.scrollTop;
+        for (const name of SCROLL_METHODS) delete list[name];
+        this.lockedList = null;
     }
 
     openChannel(channelId) {
