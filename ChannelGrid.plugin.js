@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.0.2
+ * @version 1.1.0
  */
 
 const DEFAULT_SETTINGS = {
@@ -195,6 +195,11 @@ const CSS = `
     flex: none; font-size: 9px; font-weight: 700; color: #fff; border-radius: 4px; padding: 1px 4px;
     background: var(--status-danger, #da373c);
 }
+/* Au survol du membre, le badge LIVE devient un bouton pour regarder le live */
+.cg-live::before { content: "LIVE"; }
+.cg-member:hover .cg-live { padding: 2px 6px; box-shadow: 0 0 0 1px rgba(255,255,255,.25); }
+.cg-member:hover .cg-live::before { content: "▶ WATCH"; }
+.cg-live:hover { filter: brightness(1.15); }
 
 .cg-panel { color: var(--text-normal); display: flex; flex-direction: column; gap: 14px; }
 .cg-panel label { display: flex; align-items: center; gap: 8px; }
@@ -218,7 +223,9 @@ module.exports = class ChannelGrid {
             ?? Webpack.getByKeys("transitionTo")?.transitionTo;
         this.voiceActions = Webpack.getByKeys("selectVoiceChannel");
         this.profileActions = Webpack.getByKeys("openUserProfileModal");
-        this.dispatcher = Webpack.getByKeys("dispatch", "subscribe");
+        this.streamActions = Webpack.getByKeys("watchStreamAndTransitionToStream") ?? Webpack.getByKeys("watchStream");
+        // Le dispatcher de Discord est accessible depuis n'importe quel store
+        this.dispatcher = Webpack.getByKeys("dispatch", "subscribe") ?? this.stores.UserStore?._dispatcher;
 
         if (!this.stores.GuildChannelStore || !this.transitionTo) {
             BdApi.UI.showToast("ChannelGrid: Discord modules not found", { type: "error" });
@@ -605,7 +612,7 @@ module.exports = class ChannelGrid {
         const name = this.stores.GuildMemberStore?.getNick?.(guildId, user.id) ?? user.globalName ?? user.username;
         const icons = [
             this.renderGame(user.id),
-            voiceState.selfStream ? `<span class="cg-live">LIVE</span>` : "",
+            voiceState.selfStream ? `<span class="cg-live" data-watch="${escapeHtml(voiceState.channelId ?? "")}" title="Watch stream"></span>` : "",
             voiceState.selfVideo ? CAMERA.replace("<svg", `<svg class="cg-neutral"`) : "",
             voiceState.selfDeaf || voiceState.deaf ? DEAF
                 : voiceState.selfMute || voiceState.mute ? MIC_OFF : ""
@@ -753,6 +760,11 @@ module.exports = class ChannelGrid {
         }
 
         const member = e.target.closest("[data-user]");
+        const watch = e.target.closest("[data-watch]");
+        if (member && watch) {
+            this.watchStream(member.dataset.user, watch.dataset.watch);
+            return;
+        }
         if (member) {
             this.openProfile(member.dataset.user);
             return;
@@ -938,6 +950,38 @@ module.exports = class ChannelGrid {
             else this.dispatcher.dispatch({ type: "USER_PROFILE_MODAL_OPEN", ...options });
         } catch {
             BdApi.UI.showToast("ChannelGrid: couldn't open this profile", { type: "error" });
+        }
+    }
+
+    // Regarde le live d'un membre, comme le bouton « Regarder le stream » de Discord
+    watchStream(userId, channelId) {
+        const guildId = this.renderedGuild;
+        const stream = BdApi.Webpack.getStore("ApplicationStreamingStore")?.getStreamForUser?.(userId, guildId)
+            ?? { streamType: "guild", guildId, channelId, ownerId: userId };
+        try {
+            if (this.streamActions?.watchStreamAndTransitionToStream) {
+                this.streamActions.watchStreamAndTransitionToStream(stream);
+                return;
+            }
+            // Sinon on fait comme Discord : rejoindre le vocal, demander le stream, puis afficher l'appel
+            const voiceChannelId = stream.channelId ?? channelId;
+            if (this.stores.SelectedChannelStore?.getVoiceChannelId?.() !== voiceChannelId) {
+                this.voiceActions?.selectVoiceChannel(voiceChannelId);
+            }
+            const streamKey = `guild:${stream.guildId ?? guildId}:${voiceChannelId}:${stream.ownerId ?? userId}`;
+            if (this.streamActions?.watchStream) this.streamActions.watchStream(stream);
+            else this.dispatcher.dispatch({ type: "STREAM_WATCH", streamKey, allowMultiple: true });
+            this.transitionTo(`/channels/${guildId}/${voiceChannelId}`);
+
+            // Met le live en grand, comme Discord : on sélectionne sa tuile dans l'appel.
+            // On réessaie un peu plus tard, le temps que la tuile du stream existe
+            const focus = () => this.dispatcher.dispatch({
+                type: "CHANNEL_RTC_SELECT_PARTICIPANT", channelId: voiceChannelId, id: streamKey
+            });
+            focus();
+            setTimeout(focus, 600);
+        } catch (error) {
+            BdApi.UI.showToast(`ChannelGrid: couldn't open this stream (${error?.message ?? error})`, { type: "error" });
         }
     }
 
