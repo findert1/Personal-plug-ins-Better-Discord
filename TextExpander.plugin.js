@@ -5,12 +5,6 @@
  * @version 1.0.0
  */
 
-// Événements que Discord intercepte pour garder le focus dans ses paramètres
-const GUARDED_EVENTS = [
-    "keydown", "keypress", "keyup", "beforeinput", "paste",
-    "mousedown", "pointerdown", "focusin", "focusout"
-];
-
 const DEFAULT_SETTINGS = {
     commands: [
         { trigger: ";gg", text: "GG, well played! See you next time 👋" },
@@ -45,15 +39,6 @@ module.exports = class TextExpander {
     }
 
     start() {
-        // Le focus-lock des paramètres Discord renvoie le focus vers la recherche des plugins.
-        // On intercepte ses événements dès la phase de capture sur window, avant ses listeners.
-        // Pour focusout, la cible est l'élément qui perd le focus : on regarde donc relatedTarget.
-        this.eventGuard = e => {
-            const node = e.type === "focusout" ? e.relatedTarget : e.target;
-            if (node?.closest?.(".te-panel")) e.stopImmediatePropagation();
-        };
-        for (const type of GUARDED_EVENTS) window.addEventListener(type, this.eventGuard, true);
-
         this.settings = Object.assign(structuredClone(DEFAULT_SETTINGS), BdApi.Data.load(this.meta.name, "settings"));
         this.buildMatcher();
         BdApi.DOM.addStyle(this.meta.name, CSS);
@@ -73,7 +58,6 @@ module.exports = class TextExpander {
     stop() {
         BdApi.Patcher.unpatchAll(this.meta.name);
         BdApi.DOM.removeStyle(this.meta.name);
-        for (const type of GUARDED_EVENTS) window.removeEventListener(type, this.eventGuard, true);
     }
 
     // --- Remplacement ---
@@ -111,9 +95,6 @@ module.exports = class TextExpander {
     getSettingsPanel() {
         const panel = document.createElement("div");
         panel.className = "te-panel";
-        // Le focus-lock des paramètres Discord renvoie le focus vers la recherche des plugins :
-        // cet attribut indique à react-focus-lock d'ignorer cette zone
-        panel.setAttribute("data-no-focus-lock", "true");
         this.renderPanel(panel);
         return panel;
     }

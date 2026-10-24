@@ -8,12 +8,6 @@
 // Minimum entre deux changements, pour ne pas se faire rate-limit par Discord
 const MIN_INTERVAL = 15;
 
-// Événements que Discord intercepte pour garder le focus dans ses paramètres
-const GUARDED_EVENTS = [
-    "keydown", "keypress", "keyup", "beforeinput", "paste",
-    "mousedown", "pointerdown", "focusin", "focusout"
-];
-
 // Type d'activité Discord correspondant au statut personnalisé (les autres : jeu, écoute, stream...)
 const CUSTOM_STATUS_TYPE = 4;
 
@@ -94,15 +88,6 @@ module.exports = class StatusRotator {
     }
 
     start() {
-        // Le focus-lock des paramètres Discord renvoie le focus vers la recherche des plugins.
-        // On intercepte ses événements dès la phase de capture sur window, avant ses listeners.
-        // Pour focusout, la cible est l'élément qui perd le focus : on regarde donc relatedTarget.
-        this.eventGuard = e => {
-            const node = e.type === "focusout" ? e.relatedTarget : e.target;
-            if (node?.closest?.(".sr-panel")) e.stopImmediatePropagation();
-        };
-        for (const type of GUARDED_EVENTS) window.addEventListener(type, this.eventGuard, true);
-
         this.settings = Object.assign(structuredClone(DEFAULT_SETTINGS), BdApi.Data.load(this.meta.name, "settings"));
 
         // Module interne de Discord qui gère les paramètres utilisateur (dont le statut)
@@ -132,7 +117,6 @@ module.exports = class StatusRotator {
         this.stopRotation();
         this.restoreOriginalStatus();
         BdApi.DOM.removeStyle(this.meta.name);
-        for (const type of GUARDED_EVENTS) window.removeEventListener(type, this.eventGuard, true);
     }
 
     // --- Rotation ---
@@ -229,9 +213,6 @@ module.exports = class StatusRotator {
     getSettingsPanel() {
         const panel = document.createElement("div");
         panel.className = "sr-panel";
-        // Le focus-lock des paramètres Discord renvoie le focus vers la recherche des plugins :
-        // cet attribut indique à react-focus-lock d'ignorer cette zone
-        panel.setAttribute("data-no-focus-lock", "true");
         this.renderPanel(panel);
         return panel;
     }
