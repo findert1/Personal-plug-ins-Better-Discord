@@ -52,7 +52,10 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - **More context** loads older messages, **Jump to first unread** opens the channel at the right place, and clicking any message jumps to it.
 - **Mark read** marks the channel as read and removes its card; **Mark all read** clears the whole feed. **Refresh** reloads everything.
 - New messages appear live without moving the cards around; a channel you already marked read comes back at the bottom.
-- Write in a channel or reply to a message (hover it → **Reply**) straight from its card. TextExpander commands still work.
+- Write in a channel or reply to a message (hover it → **Reply**) straight from its card, with an emoji button. TextExpander commands still work.
+- Add or remove reactions (hover a message → **☺ +**, or click an existing reaction). The emoji picker has recent emojis, every server's custom emojis (with Nitro) and a search.
+- Messages are shown with Discord's Markdown: bold, italic, underline, strikethrough, spoilers, code, headers, quotes, lists, masked links and timestamps.
+- Click an image to open it full size, with arrows when a message has several.
 - Muted channels (and channels in muted categories) are left out. Settings: hide messages from bots, ignore muted channels (on by default).
 
 ## HelloWorld

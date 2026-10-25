@@ -2,7 +2,7 @@
  * @name ServerFeed
  * @author findert
  * @description Shows every unread message of the server in one feed, grouped by channel with context, like a timeline. Mark channels as read as you go.
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 const DEFAULT_SETTINGS = {
@@ -23,8 +23,13 @@ const DISCORD_EPOCH = 1420070400000n;
 
 const STORES = [
     "ChannelStore", "GuildChannelStore", "GuildStore", "SelectedGuildStore", "SelectedChannelStore", "ReadStateStore",
-    "UserGuildSettingsStore", "PermissionStore", "GuildMemberStore", "UserStore"
+    "UserGuildSettingsStore", "PermissionStore", "GuildMemberStore", "UserStore", "EmojiStore"
 ];
+const EMOJI_CATEGORIES = {
+    people: "😀", nature: "🐻", food: "🍔", activity: "⚽",
+    travel: "🚗", objects: "💡", symbols: "❤️", flags: "🏁"
+};
+const RECENT_LIMIT = 24;
 
 const CSS = `
 [data-sf-host] { position: relative; }
@@ -66,13 +71,58 @@ const CSS = `
 .sf-messages { padding: 6px 0; }
 .sf-msg { position: relative; display: flex; gap: 10px; padding: 4px 14px; cursor: pointer; }
 .sf-msg.sf-replying { background: color-mix(in srgb, var(--brand-500, #5865f2) 12%, transparent); box-shadow: inset 2px 0 0 var(--brand-500, #5865f2); }
-.sf-msg-reply {
-    position: absolute; top: -6px; right: 14px; display: none; border: none; border-radius: 6px; padding: 2px 8px; cursor: pointer;
-    font-size: 12px; font-weight: 600; color: var(--interactive-active, #fff);
+.sf-msg-tools {
+    position: absolute; top: -6px; right: 14px; display: none; gap: 2px; padding: 2px; border-radius: 6px;
     background: var(--background-base-lowest, var(--background-tertiary, #1e1f22)); box-shadow: 0 1px 4px rgba(0,0,0,.3);
 }
-.sf-msg:hover .sf-msg-reply { display: block; }
-.sf-msg-reply:hover { background: var(--brand-500, #5865f2); }
+.sf-msg:hover .sf-msg-tools { display: flex; }
+.sf-msg-tools button {
+    border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; background: none;
+    font-size: 12px; font-weight: 600; color: var(--interactive-active, #fff);
+}
+.sf-msg-tools button:hover { background: var(--brand-500, #5865f2); }
+.sf-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.sf-reaction {
+    display: flex; align-items: center; gap: 4px; border-radius: 8px; padding: 2px 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+    color: var(--interactive-normal, #b5bac1); background: var(--background-base-lowest, var(--background-tertiary, #1e1f22));
+    border: 1px solid transparent;
+}
+.sf-reaction:hover { border-color: color-mix(in srgb, var(--interactive-normal, #b5bac1) 30%, transparent); }
+.sf-reaction.sf-me { color: var(--interactive-active, #fff); background: color-mix(in srgb, var(--brand-500, #5865f2) 25%, transparent); border-color: var(--brand-500, #5865f2); }
+.sf-reaction img, .sf-picker img { width: 18px; height: 18px; object-fit: contain; }
+.sf-reaction-add { opacity: 0; }
+.sf-msg:hover .sf-reaction-add { opacity: 1; }
+
+.sf-picker {
+    position: fixed; z-index: 1000; width: 420px; height: 400px; display: flex; flex-direction: column; overflow: hidden;
+    border-radius: 10px; background: var(--background-base-low, var(--background-secondary, #2b2d31));
+    box-shadow: 0 8px 24px rgba(0,0,0,.45); border: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 12%, transparent);
+}
+.sf-picker-search {
+    margin: 8px; border: none; outline: none; border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 14px;
+    color: var(--text-normal, #dbdee1); background: var(--background-base-lowest, var(--background-tertiary, #1e1f22));
+}
+.sf-picker-main { flex: 1; min-height: 0; display: flex; }
+.sf-picker-tabs {
+    flex: none; width: 52px; overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
+    display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px 0;
+    background: var(--background-base-lowest, var(--background-tertiary, #1e1f22));
+}
+.sf-picker-tabs::-webkit-scrollbar { display: none; }
+.sf-picker-body { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thin-thumb, #1a1b1e) transparent; }
+.sf-picker-body::-webkit-scrollbar { width: 8px; }
+.sf-picker-body::-webkit-scrollbar-thumb { border-radius: 4px; background: var(--scrollbar-thin-thumb, #1a1b1e); }
+.sf-picker-tabs button { width: 36px; height: 36px; min-width: 36px; min-height: 36px; flex: none; border: none; border-radius: 50%; padding: 0; cursor: pointer; background: none; opacity: .6; font-size: 18px; overflow: hidden; color: var(--text-normal, #dbdee1); }
+.sf-picker-tabs button.sf-active, .sf-picker-tabs button:hover { opacity: 1; background: var(--background-modifier-selected, #404249); }
+.sf-picker-tabs button img { display: block; width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+.sf-picker-tabs .sf-letter { font-size: 11px; font-weight: 700; }
+.sf-picker-body { flex: 1; min-width: 0; overflow-y: auto; padding: 4px 8px 8px; }
+.sf-picker-title { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--text-muted, #949ba4); margin: 6px 2px 4px; }
+.sf-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, 36px); gap: 2px; }
+.sf-picker-grid button { width: 36px; height: 36px; border: none; border-radius: 6px; padding: 0; cursor: pointer; background: none; font-size: 22px; }
+.sf-picker-grid button:hover { background: var(--background-modifier-hover, #393c41); }
+.sf-picker-grid button img { width: 28px; height: 28px; }
+.sf-picker-empty { color: var(--text-muted, #949ba4); padding: 12px 4px; font-size: 13px; }
 .sf-msg:hover { background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 6%, transparent); }
 .sf-msg.sf-grouped { padding-top: 0; }
 .sf-msg.sf-grouped .sf-avatar { visibility: hidden; height: 0; }
@@ -88,13 +138,49 @@ const CSS = `
 .sf-text a { color: var(--text-link, #00a8fc); }
 .sf-text .sf-mention { color: var(--mention-foreground, #c9cdfb); background: var(--mention-background, rgba(88,101,242,.3)); border-radius: 3px; padding: 0 2px; }
 .sf-text .sf-emoji { width: 20px; height: 20px; vertical-align: -5px; }
+.sf-text .sf-h { font-weight: 700; line-height: 1.25; margin: 6px 0 2px; color: var(--header-primary, #f2f3f5); }
+.sf-text .sf-h1 { font-size: 22px; }
+.sf-text .sf-h2 { font-size: 18px; }
+.sf-text .sf-h3 { font-size: 16px; }
+.sf-text .sf-subtext { font-size: 12px; color: var(--text-muted, #949ba4); }
+.sf-text .sf-quote { border-left: 4px solid var(--background-modifier-accent, #4e5058); padding-left: 10px; margin: 2px 0; }
+.sf-text .sf-li { display: flex; gap: 6px; }
+.sf-text .sf-bullet { flex: none; min-width: 10px; }
+.sf-text .sf-code, .sf-text .sf-codeblock {
+    font-family: var(--font-code, Consolas, "Courier New", monospace); font-size: 85%;
+    background: var(--background-base-lowest, var(--background-tertiary, #1e1f22));
+}
+.sf-text .sf-code { padding: 1px 4px; border-radius: 4px; }
+.sf-text .sf-codeblock {
+    display: block; margin: 4px 0; padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-x: auto;
+    border: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 12%, transparent);
+}
+.sf-text .sf-spoiler { border-radius: 3px; cursor: pointer; background: var(--background-base-lowest, #1e1f22); color: transparent; }
+.sf-text .sf-spoiler:not(.sf-revealed) * { visibility: hidden; }
+.sf-text .sf-spoiler.sf-revealed { cursor: auto; color: inherit; background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 15%, transparent); }
+.sf-text .sf-timestamp { border-radius: 3px; padding: 0 2px; background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 12%, transparent); }
 .sf-edited { font-size: 10px; color: var(--text-muted, #949ba4); }
 .sf-deleted .sf-text { text-decoration: line-through; opacity: .6; }
 .sf-reply { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted, #949ba4); margin-bottom: 2px; min-width: 0; }
 .sf-reply span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-reply b { font-weight: 600; color: var(--interactive-normal, #b5bac1); }
 .sf-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.sf-attachments img { max-width: 240px; max-height: 180px; border-radius: 6px; }
+.sf-attachments img { max-width: 240px; max-height: 180px; border-radius: 6px; cursor: zoom-in; }
+.sf-viewer {
+    position: fixed; inset: 0; z-index: 1001; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    background: rgba(0,0,0,.85);
+}
+.sf-viewer img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 4px; }
+.sf-viewer-bar { display: flex; align-items: center; gap: 14px; font-size: 14px; color: #dbdee1; }
+.sf-viewer-bar a { color: #dbdee1; opacity: .8; text-decoration: none; }
+.sf-viewer-bar a:hover { opacity: 1; text-decoration: underline; }
+.sf-viewer-nav {
+    position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border: none; border-radius: 50%; cursor: pointer;
+    font-size: 22px; color: #fff; background: rgba(0,0,0,.5);
+}
+.sf-viewer-nav:hover { background: rgba(0,0,0,.8); }
+.sf-viewer-prev { left: 24px; }
+.sf-viewer-next { right: 24px; }
 .sf-file { font-size: 13px; color: var(--text-link, #00a8fc); }
 .sf-separator {
     display: flex; align-items: center; gap: 8px; padding: 4px 14px; font-size: 11px; font-weight: 600;
@@ -113,6 +199,7 @@ const CSS = `
 .sf-replybar button { border: none; background: none; cursor: pointer; color: inherit; font-size: 14px; padding: 0 2px; }
 .sf-replybar button:hover { color: var(--interactive-active, #fff); }
 .sf-input-row { display: flex; gap: 8px; align-items: flex-end; }
+.sf-input-row .sf-emoji-btn { font-size: 18px; padding: 3px 10px; }
 .sf-input {
     flex: 1; min-width: 0; resize: none; max-height: 140px; border: none; outline: none; border-radius: 8px; padding: 8px 10px;
     font: inherit; font-size: 14px; line-height: 1.35; color: var(--text-normal, #dbdee1);
@@ -182,6 +269,8 @@ module.exports = class ServerFeed {
         this.onMessageCreate = action => this.addLiveMessage(action);
         this.onMessageUpdate = action => this.updateMessage(action.message);
         this.onMessageDelete = action => this.deleteMessage(action.channelId, action.id);
+        this.onReactionAdd = action => this.applyReaction(action, 1);
+        this.onReactionRemove = action => this.applyReaction(action, -1);
         // Ouvrir un salon (ou changer de serveur) ferme le fil
         this.onChannelChange = () => {
             if (this.open && this.stores.SelectedChannelStore?.getChannelId() !== this.openedChannel) this.close();
@@ -291,6 +380,8 @@ module.exports = class ServerFeed {
         this.dispatcher.subscribe("MESSAGE_CREATE", this.onMessageCreate);
         this.dispatcher.subscribe("MESSAGE_UPDATE", this.onMessageUpdate);
         this.dispatcher.subscribe("MESSAGE_DELETE", this.onMessageDelete);
+        this.dispatcher.subscribe("MESSAGE_REACTION_ADD", this.onReactionAdd);
+        this.dispatcher.subscribe("MESSAGE_REACTION_REMOVE", this.onReactionRemove);
         this.ensure();
         this.refresh();
     }
@@ -302,6 +393,10 @@ module.exports = class ServerFeed {
         this.dispatcher?.unsubscribe("MESSAGE_CREATE", this.onMessageCreate);
         this.dispatcher?.unsubscribe("MESSAGE_UPDATE", this.onMessageUpdate);
         this.dispatcher?.unsubscribe("MESSAGE_DELETE", this.onMessageDelete);
+        this.dispatcher?.unsubscribe("MESSAGE_REACTION_ADD", this.onReactionAdd);
+        this.dispatcher?.unsubscribe("MESSAGE_REACTION_REMOVE", this.onReactionRemove);
+        this.closePicker();
+        this.closeViewer();
         this.panel?.remove();
         this.host?.removeAttribute("data-sf-host");
         this.host = null;
@@ -534,7 +629,9 @@ module.exports = class ServerFeed {
         e.stopPropagation();
         const { action: name, channel, message, user } = action.dataset;
 
-        if (name === "close") this.close();
+        if (name === "spoiler") action.classList.add("sf-revealed");
+        else if (name === "image") this.openViewer(channel, message, Number(action.dataset.index));
+        else if (name === "close") this.close();
         else if (name === "refresh") this.refresh();
         else if (name === "read-all") this.markAllRead();
         else if (name === "read") this.markRead(channel);
@@ -545,6 +642,253 @@ module.exports = class ServerFeed {
         else if (name === "reply") this.startReply(channel, message);
         else if (name === "cancel-reply") this.cancelReply(channel);
         else if (name === "send") this.send(channel);
+        else if (name === "emoji") {
+            const input = this.panel.querySelector(`.sf-input[data-channel="${channel}"]`);
+            // On retient la position du curseur avant que le sélecteur prenne le focus
+            const range = input ? [input.selectionStart, input.selectionEnd] : null;
+            this.openPicker(action, `input:${channel}`, emoji => this.insertEmoji(channel, emoji, range));
+        }
+        else if (name === "react") this.toggleReaction(channel, message, JSON.parse(action.dataset.emoji));
+        else if (name === "add-reaction") {
+            try {
+                this.openPicker(action, `react:${message}`, emoji => this.toggleReaction(channel, message, emoji));
+            } catch (error) {
+                console.error(`[${this.meta.name}] couldn't open the emoji picker`, error);
+                BdApi.UI.showToast(`ServerFeed: couldn't open the emoji picker (${error?.message ?? error})`, { type: "error" });
+            }
+        }
+    }
+
+    // --- Visionneuse d'images ---
+
+    // Comme Discord : l'image s'ouvre en grand, avec les flèches s'il y en a plusieurs dans le message
+    openViewer(channelId, messageId, index) {
+        const message = this.findMessage(channelId, messageId);
+        const images = message ? getImages(message) : [];
+        if (!images.length) return;
+        this.closeViewer();
+
+        const viewer = el("div", "sf-viewer");
+        const img = el("img");
+        const bar = el("div", "sf-viewer-bar");
+        const counter = el("span");
+        const link = el("a", "", "Open in Browser");
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        bar.append(counter, link);
+        viewer.append(img, bar);
+
+        let current = Math.min(Math.max(0, index || 0), images.length - 1);
+        const show = step => {
+            current = (current + step + images.length) % images.length;
+            img.src = images[current].full;
+            link.href = images[current].original;
+            counter.textContent = images.length > 1 ? `${current + 1} / ${images.length}` : "";
+        };
+        if (images.length > 1) {
+            for (const [className, step, text] of [["sf-viewer-prev", -1, "‹"], ["sf-viewer-next", 1, "›"]]) {
+                const button = el("button", `sf-viewer-nav ${className}`, text);
+                button.addEventListener("click", e => {
+                    e.stopPropagation();
+                    show(step);
+                });
+                viewer.append(button);
+            }
+        }
+        show(0);
+
+        // Un clic à côté de l'image (ou Échap) ferme la visionneuse
+        viewer.addEventListener("click", e => {
+            if (e.target === viewer) this.closeViewer();
+        });
+        const onKey = e => {
+            if (!["Escape", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.key === "Escape") this.closeViewer();
+            else if (images.length > 1) show(e.key === "ArrowLeft" ? -1 : 1);
+        };
+        document.addEventListener("keydown", onKey, true);
+        document.body.append(viewer);
+        this.viewer = { element: viewer, onKey };
+    }
+
+    closeViewer() {
+        if (!this.viewer) return;
+        document.removeEventListener("keydown", this.viewer.onKey, true);
+        this.viewer.element.remove();
+        this.viewer = null;
+    }
+
+    // --- Réactions ---
+
+    // Ajoute ou retire une réaction quand Discord nous l'annonce (la nôtre comme celles des autres)
+    applyReaction({ channelId, messageId, userId, emoji }, delta) {
+        const message = this.findMessage(channelId, messageId);
+        if (!message || !emoji) return;
+        const mine = userId === this.stores.UserStore?.getCurrentUser?.()?.id;
+        const reactions = message.reactions ??= [];
+        let reaction = reactions.find(item => sameEmoji(item.emoji, emoji));
+        if (!reaction) {
+            if (delta < 0) return;
+            reaction = { emoji: { id: emoji.id ?? null, name: emoji.name, animated: Boolean(emoji.animated) }, count: 0, me: false };
+            reactions.push(reaction);
+        }
+        // On ignore un évènement déjà appliqué (le nôtre est affiché dès le clic)
+        if (mine && reaction.me === delta > 0) return;
+        reaction.count = Math.max(0, reaction.count + delta);
+        if (mine) reaction.me = delta > 0;
+        if (!reaction.count) reactions.splice(reactions.indexOf(reaction), 1);
+        this.render();
+    }
+
+    async toggleReaction(channelId, messageId, emoji) {
+        const message = this.findMessage(channelId, messageId);
+        if (!message) return;
+        const remove = Boolean(message.reactions?.find(item => sameEmoji(item.emoji, emoji))?.me);
+        const me = this.stores.UserStore?.getCurrentUser?.()?.id;
+        this.applyReaction({ channelId, messageId, userId: me, emoji }, remove ? -1 : 1);
+        if (!remove) this.rememberEmoji(emoji);
+
+        const code = encodeURIComponent(emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name);
+        const url = `/channels/${channelId}/messages/${messageId}/reactions/${code}/@me`;
+        try {
+            await (remove ? this.http.del({ url }) : this.http.put({ url, query: { location: "Message", type: 0 } }));
+        } catch (error) {
+            // Échec : on annule l'affichage
+            this.applyReaction({ channelId, messageId, userId: me, emoji }, remove ? 1 : -1);
+            console.error(`[${this.meta.name}] couldn't react`, error);
+            BdApi.UI.showToast(`ServerFeed: couldn't react (${error?.body?.message ?? error?.message ?? error?.status ?? error})`, { type: "error" });
+        }
+    }
+
+    rememberEmoji(emoji) {
+        const recent = (BdApi.Data.load(this.meta.name, "recentEmojis") ?? []).filter(item => !sameEmoji(item, emoji));
+        recent.unshift({ id: emoji.id ?? null, name: emoji.name, animated: Boolean(emoji.animated) });
+        BdApi.Data.save(this.meta.name, "recentEmojis", recent.slice(0, RECENT_LIMIT));
+    }
+
+    // --- Sélecteur d'emoji ---
+
+    // Emojis unicode (module interne de Discord) et emojis de tous tes serveurs (Nitro : utilisables partout)
+    getEmojiGroups() {
+        const groups = [];
+        const recent = BdApi.Data.load(this.meta.name, "recentEmojis") ?? [];
+        if (recent.length) groups.push({ id: "recent", icon: { text: "🕘" }, title: "Recently used", emojis: recent });
+
+        const user = this.stores.UserStore?.getCurrentUser?.();
+        const nitro = Boolean(user?.premiumType);
+        const guilds = Object.values(this.stores.GuildStore?.getGuilds?.() ?? {})
+            .sort((a, b) => (b.id === this.guildId) - (a.id === this.guildId));
+        for (const guild of guilds) {
+            if (!nitro && guild.id !== this.guildId) continue;
+            let emojis = [];
+            try { emojis = this.stores.EmojiStore?.getGuildEmoji?.(guild.id) ?? []; } catch {}
+            emojis = emojis.filter(emoji => emoji.available !== false && (nitro || !emoji.animated))
+                .map(emoji => ({ id: emoji.id, name: emoji.name, animated: Boolean(emoji.animated) }));
+            if (!emojis.length) continue;
+            groups.push({
+                id: guild.id,
+                icon: guild.icon ? { url: `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=64` } : { letters: guild.name },
+                title: guild.name,
+                emojis
+            });
+        }
+
+        for (const category of loadUnicodeEmojis()) groups.push(category);
+        return groups;
+    }
+
+    openPicker(button, key, onPick) {
+        const reopening = this.picker?.key === key;
+        this.closePicker();
+        if (reopening) return;
+
+        const groups = this.getEmojiGroups();
+        const picker = el("div", "sf-picker");
+        const search = el("input", "sf-picker-search");
+        search.placeholder = "Search emoji";
+        const main = el("div", "sf-picker-main");
+        const tabs = el("div", "sf-picker-tabs");
+        const body = el("div", "sf-picker-body");
+        main.append(tabs, body);
+        picker.append(search, main);
+
+        const pick = emoji => {
+            this.closePicker();
+            onPick(emoji);
+        };
+        const grid = emojis => {
+            const node = el("div", "sf-picker-grid");
+            for (const emoji of emojis) {
+                const item = el("button");
+                item.title = `:${emoji.label ?? emoji.name}:`;
+                item.innerHTML = emojiHtml(emoji);
+                item.addEventListener("click", () => pick(emoji));
+                node.append(item);
+            }
+            return node;
+        };
+        const showGroup = group => {
+            body.replaceChildren(el("div", "sf-picker-title", group.title), grid(group.emojis));
+            body.scrollTop = 0;
+            tabs.querySelectorAll("button").forEach(tab => tab.classList.toggle("sf-active", tab.dataset.group === group.id));
+        };
+        for (const group of groups) {
+            const tab = el("button");
+            tab.dataset.group = group.id;
+            tab.title = group.title;
+            if (group.icon.url) tab.innerHTML = `<img src="${escapeHtml(group.icon.url)}" alt="" loading="lazy">`;
+            else if (group.icon.letters) tab.append(el("span", "sf-letter", group.icon.letters.split(/\s+/).map(word => word[0]).join("").slice(0, 3)));
+            else tab.innerHTML = emojiHtml({ name: group.icon.text });
+            tab.addEventListener("click", () => {
+                search.value = "";
+                showGroup(group);
+            });
+            tabs.append(tab);
+        }
+        search.addEventListener("input", () => {
+            const query = search.value.trim().toLowerCase().replace(/:/g, "");
+            if (!query) return showGroup(groups[0]);
+            const seen = new Set();
+            const found = groups.filter(group => group.id !== "recent").flatMap(group => group.emojis)
+                .filter(emoji => (emoji.names ?? [emoji.name]).some(name => name?.toLowerCase().includes(query)))
+                .filter(emoji => {
+                    const key = emoji.id ?? emoji.name;
+                    return !seen.has(key) && seen.add(key);
+                })
+                .slice(0, 300);
+            body.replaceChildren(found.length ? grid(found) : el("div", "sf-picker-empty", "No emoji found"));
+        });
+        search.addEventListener("keydown", e => {
+            e.stopPropagation();
+            if (e.key === "Escape") this.closePicker();
+            if (e.key === "Enter") body.querySelector(".sf-picker-grid button")?.click();
+        });
+        if (groups.length) showGroup(groups[0]);
+        else body.append(el("div", "sf-picker-empty", "No emoji found"));
+
+        // Placé à côté du bouton, sans sortir de l'écran
+        document.body.append(picker);
+        const rect = button.getBoundingClientRect();
+        const left = Math.min(Math.max(8, rect.right - 420), window.innerWidth - 428);
+        const top = rect.bottom + 408 > window.innerHeight ? Math.max(8, rect.top - 408) : rect.bottom + 6;
+        picker.style.left = `${left}px`;
+        picker.style.top = `${top}px`;
+        search.focus();
+
+        const onOutside = e => {
+            if (!picker.contains(e.target) && !e.target.closest?.("[data-action='add-reaction'], [data-action='emoji']")) this.closePicker();
+        };
+        setTimeout(() => document.addEventListener("mousedown", onOutside, true));
+        this.picker = { element: picker, key, onOutside };
+    }
+
+    closePicker() {
+        if (!this.picker) return;
+        document.removeEventListener("mousedown", this.picker.onOutside, true);
+        this.picker.element.remove();
+        this.picker = null;
     }
 
     // --- Répondre depuis le fil ---
@@ -588,6 +932,25 @@ module.exports = class ServerFeed {
         if (!input) return;
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
+    }
+
+    // Unicode tel quel, emoji personnalisé au format de Discord (<:nom:id> ou <a:nom:id> s'il est animé)
+    insertEmoji(channelId, emoji, range) {
+        const text = emoji.id ? `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>` : emoji.name;
+        const draft = this.drafts.get(channelId) ?? "";
+        const [start, end] = range ?? [draft.length, draft.length];
+        const before = draft.slice(0, start);
+        const insert = (before && !/\s$/.test(before) && emoji.id ? " " : "") + text;
+        this.drafts.set(channelId, before + insert + draft.slice(end));
+        this.rememberEmoji(emoji);
+
+        const input = this.panel.querySelector(`.sf-input[data-channel="${channelId}"]`);
+        if (!input) return;
+        input.value = this.drafts.get(channelId);
+        autoSize(input);
+        input.focus();
+        const cursor = start + insert.length;
+        input.setSelectionRange(cursor, cursor);
     }
 
     findMessage(channelId, messageId) {
@@ -759,6 +1122,7 @@ module.exports = class ServerFeed {
                 ${replyBar}
                 <div class="sf-input-row">
                     <textarea class="sf-input" data-channel="${id}" rows="1" placeholder="Message #${escapeHtml(channel?.name ?? "")}"></textarea>
+                    <button class="sf-btn sf-emoji-btn" data-action="emoji" data-channel="${id}" title="Emoji">☺</button>
                     <button class="sf-btn sf-primary" data-action="send" data-channel="${id}">Send</button>
                 </div>
             </div>`;
@@ -775,8 +1139,20 @@ module.exports = class ServerFeed {
         if (message.sfDeleted) classes.push("sf-deleted");
         if (this.replyTo.get(message.channel_id) === message.id) classes.push("sf-replying");
         if (author.id && author.id === this.stores.UserStore?.getCurrentUser?.()?.id) classes.push("sf-own");
-        const replyButton = message.sfDeleted ? ""
-            : `<button class="sf-msg-reply" data-action="reply" data-channel="${escapeHtml(message.channel_id)}" data-message="${escapeHtml(message.id)}">↩ Reply</button>`;
+        const target = `data-channel="${escapeHtml(message.channel_id)}" data-message="${escapeHtml(message.id)}"`;
+        const replyButton = message.sfDeleted ? "" : `
+            <div class="sf-msg-tools">
+                <button data-action="add-reaction" ${target} title="Add Reaction">☺ +</button>
+                <button data-action="reply" ${target}>↩ Reply</button>
+            </div>`;
+        const reactions = message.reactions?.length && !message.sfDeleted ? `
+            <div class="sf-reactions">
+                ${message.reactions.map(reaction => `
+                    <button class="sf-reaction${reaction.me ? " sf-me" : ""}" data-action="react" ${target}
+                        data-emoji="${escapeHtml(JSON.stringify({ id: reaction.emoji.id ?? null, name: reaction.emoji.name, animated: Boolean(reaction.emoji.animated) }))}"
+                        title=":${escapeHtml(reaction.emoji.name ?? "")}:">${emojiHtml(reaction.emoji)}<span>${reaction.count}</span></button>`).join("")}
+                <button class="sf-reaction sf-reaction-add" data-action="add-reaction" ${target} title="Add Reaction">☺ +</button>
+            </div>` : "";
 
         const name = this.getName(author);
         const reply = message.referenced_message
@@ -796,7 +1172,8 @@ module.exports = class ServerFeed {
                 <div class="sf-body">
                     ${reply}${meta}
                     <div class="sf-text">${this.renderContent(message)}${message.edited_timestamp ? ` <span class="sf-edited">(edited)</span>` : ""}</div>
-                    ${renderAttachments(message)}
+                    ${renderAttachments(message, target)}
+                    ${reactions}
                 </div>
             </div>`;
     }
@@ -806,23 +1183,39 @@ module.exports = class ServerFeed {
     }
 
     // Texte du message : mentions, salons, emojis personnalisés et liens
+    // Markdown de Discord. Le code, les liens, les mentions et les emojis sont mis de côté d'abord
+    // (remplacés par des repères), pour que leurs * ou _ ne soient pas pris pour de la mise en forme
     renderContent(message) {
-        let html = escapeHtml(message.content ?? "");
-        // Les liens d'abord, pour ne pas toucher aux adresses des emojis ajoutés ensuite
-        html = html.replace(/https?:\/\/[^\s<]+/g, url => `<a href="${url}" target="_blank" rel="noreferrer">${url}</a>`);
-        html = html.replace(/&#60;@!?(\d+)&#62;/g, (_, id) => {
+        const stash = [];
+        const keep = html => `\u0000${stash.push(html) - 1}\u0000`;
+        const link = (url, text) => keep(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${text}</a>`);
+
+        let raw = String(message.content ?? "");
+        raw = raw.replace(/```(?:([\w+#-]+)\n)?([\s\S]*?)```/g, (_, lang, code) =>
+            keep(`<code class="sf-codeblock">${escapeHtml(code.replace(/^\n+|\n+$/g, ""))}</code>`));
+        raw = raw.replace(/``([^`]+?)``|`([^`\n]+?)`/g, (_, double, single) =>
+            keep(`<code class="sf-code">${escapeHtml(double ?? single)}</code>`));
+        raw = raw.replace(/\[([^\]\n]+)\]\(<?(https?:\/\/[^\s)>]+)>?\)/g, (_, text, url) => link(url, escapeHtml(text)));
+        raw = raw.replace(/<?(https?:\/\/[^\s<>]*[^\s<>.,:;"')\]!?])>?/g, (_, url) => link(url, escapeHtml(url)));
+        raw = raw.replace(/<@!?(\d+)>/g, (_, id) => {
             const user = this.stores.UserStore?.getUser?.(id);
             const mention = message.mentions?.find(item => item.id === id);
-            return `<span class="sf-mention">@${escapeHtml(user ? this.getName(user) : mention ? this.getName(mention) : "user")}</span>`;
+            return keep(`<span class="sf-mention">@${escapeHtml(user ? this.getName(user) : mention ? this.getName(mention) : "user")}</span>`);
         });
-        html = html.replace(/&#60;@&#38;(\d+)&#62;/g, (_, id) => {
+        raw = raw.replace(/<@&(\d+)>/g, (_, id) => {
             const role = this.stores.GuildStore?.getRole?.(this.guildId, id) ?? this.stores.GuildStore?.getGuild?.(this.guildId)?.roles?.[id];
-            return `<span class="sf-mention">@${escapeHtml(role?.name ?? "role")}</span>`;
+            return keep(`<span class="sf-mention">@${escapeHtml(role?.name ?? "role")}</span>`);
         });
-        html = html.replace(/&#60;#(\d+)&#62;/g, (_, id) =>
-            `<span class="sf-mention">#${escapeHtml(this.stores.ChannelStore?.getChannel?.(id)?.name ?? "channel")}</span>`);
-        html = html.replace(/&#60;(a?):(\w+):(\d+)&#62;/g, (_, animated, name, id) =>
-            `<img class="sf-emoji" alt=":${name}:" src="https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=48">`);
+        raw = raw.replace(/<#(\d+)>/g, (_, id) =>
+            keep(`<span class="sf-mention">#${escapeHtml(this.stores.ChannelStore?.getChannel?.(id)?.name ?? "channel")}</span>`));
+        raw = raw.replace(/<(a?):(\w+):(\d+)>/g, (_, animated, name, id) =>
+            keep(`<img class="sf-emoji" alt=":${escapeHtml(name)}:" src="https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=48">`));
+        raw = raw.replace(/<t:(-?\d+)(?::([tTdDfFR]))?>/g, (_, time, style) =>
+            keep(`<span class="sf-timestamp">${escapeHtml(formatTimestamp(Number(time) * 1000, style))}</span>`));
+
+        let html = raw.trim() ? renderBlocks(raw.split("\n")) : "";
+        // Les repères peuvent en contenir d'autres (texte d'un lien) : on remplace jusqu'à ce qu'il n'en reste plus
+        for (let i = 0; i < 3 && html.includes("\u0000"); i++) html = html.replace(/\u0000(\d+)\u0000/g, (_, index) => stash[index]);
 
         if (!html && message.sticker_items?.length) html = `<i>Sticker: ${escapeHtml(message.sticker_items[0].name)}</i>`;
         if (!html && message.embeds?.length && !message.embeds.some(embed => embed.thumbnail || embed.image)) {
@@ -861,17 +1254,144 @@ module.exports = class ServerFeed {
 };
 
 // Images jointes (fichiers et aperçus de liens) en miniatures, autres fichiers en lien
-function renderAttachments(message) {
-    const items = [];
+// --- Markdown ---
+
+// Titres, citations, listes ; le reste est du texte normal, ligne par ligne
+function renderBlocks(lines) {
+    const out = [];
+    let text = [];
+    const flush = () => {
+        if (text.length) out.push(`<div>${renderInline(text.join("\n")) || "&#8203;"}</div>`);
+        text = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let match;
+        if ((match = line.match(/^>>> ?(.*)$/))) {
+            flush();
+            out.push(`<div class="sf-quote">${renderBlocks([match[1], ...lines.slice(i + 1)])}</div>`);
+            break;
+        }
+        if (/^> /.test(line) || line === ">") {
+            flush();
+            const quoted = [];
+            while (i < lines.length && (/^> /.test(lines[i]) || lines[i] === ">")) quoted.push(lines[i++].slice(2));
+            i--;
+            out.push(`<div class="sf-quote">${renderBlocks(quoted)}</div>`);
+        } else if ((match = line.match(/^(#{1,3}) +(.+)$/))) {
+            flush();
+            out.push(`<div class="sf-h sf-h${match[1].length}">${renderInline(match[2])}</div>`);
+        } else if ((match = line.match(/^-# +(.+)$/))) {
+            flush();
+            out.push(`<div class="sf-subtext">${renderInline(match[1])}</div>`);
+        } else if ((match = line.match(/^( *)(?:[-*]|(\d+)\.) +(.+)$/))) {
+            flush();
+            const indent = Math.min(match[1].length, 8) * 6;
+            out.push(`<div class="sf-li" style="padding-left: ${indent}px"><span class="sf-bullet">${match[2] ? `${match[2]}.` : "•"}</span><span>${renderInline(match[3])}</span></div>`);
+        } else {
+            text.push(line);
+        }
+    }
+    flush();
+    return out.join("");
+}
+
+function renderInline(text) {
+    return escapeHtml(text)
+        .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/__(.+?)__/g, "<u>$1</u>")
+        .replace(/\*(?!\s)(.+?)(?<!\s)\*/g, "<em>$1</em>")
+        .replace(/(^|[^\w])_(?!\s)(.+?)(?<!\s)_(?![\w])/g, "$1<em>$2</em>")
+        .replace(/~~(.+?)~~/g, "<s>$1</s>")
+        .replace(/\|\|(.+?)\|\|/g, `<span class="sf-spoiler" data-action="spoiler">$1</span>`);
+}
+
+// Dates <t:…> de Discord, dans le format demandé
+function formatTimestamp(time, style = "f") {
+    const date = new Date(time);
+    if (style === "R") {
+        const diff = time - Date.now();
+        const units = [["year", 31536000000], ["month", 2592000000], ["day", 86400000], ["hour", 3600000], ["minute", 60000], ["second", 1000]];
+        const [unit, size] = units.find(([, size]) => Math.abs(diff) >= size) ?? units[units.length - 1];
+        return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(diff / size), unit);
+    }
+    const formats = {
+        t: { timeStyle: "short" }, T: { timeStyle: "medium" }, d: { dateStyle: "short" }, D: { dateStyle: "long" },
+        f: { dateStyle: "long", timeStyle: "short" }, F: { dateStyle: "full", timeStyle: "short" }
+    };
+    return date.toLocaleString(undefined, formats[style] ?? formats.f);
+}
+
+function sameEmoji(a, b) {
+    return a.id ? a.id === b.id : !b.id && a.name === b.name;
+}
+
+// Image de l'emoji : celle de Discord pour les emojis personnalisés, Twemoji pour l'unicode si on l'a
+function emojiHtml(emoji) {
+    if (emoji.id) {
+        return `<img src="https://cdn.discordapp.com/emojis/${escapeHtml(emoji.id)}.${emoji.animated ? "gif" : "webp"}?size=48" alt="${escapeHtml(emoji.name ?? "")}" loading="lazy">`;
+    }
+    const url = emoji.url ?? unicodeUrls().get(emoji.name);
+    return url ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(emoji.name)}" loading="lazy">` : `<span>${escapeHtml(emoji.name ?? "")}</span>`;
+}
+
+let unicodeEmojis = null;
+let unicodeUrlMap = null;
+
+// Emojis unicode par catégorie, tirés du module interne de Discord
+function loadUnicodeEmojis() {
+    if (unicodeEmojis) return unicodeEmojis;
+    const filter = m => typeof m?.getByCategory === "function" && typeof m?.getByName === "function";
+    const module = BdApi.Webpack.getModule(filter) ?? BdApi.Webpack.getModule(filter, { searchExports: true });
+    unicodeEmojis = [];
+    for (const [id, icon] of Object.entries(EMOJI_CATEGORIES)) {
+        let list;
+        try { list = module?.getByCategory(id); } catch { list = null; }
+        if (!list?.length) continue;
+        unicodeEmojis.push({
+            id, icon: { text: icon }, title: id,
+            emojis: list.map(emoji => ({
+                id: null, name: emoji.surrogates, label: emoji.uniqueName ?? emoji.names?.[0],
+                names: emoji.names ?? [], url: emoji.url
+            }))
+        });
+    }
+    return unicodeEmojis;
+}
+
+function unicodeUrls() {
+    if (!unicodeUrlMap) {
+        unicodeUrlMap = new Map();
+        for (const group of loadUnicodeEmojis()) {
+            for (const emoji of group.emojis) if (emoji.url) unicodeUrlMap.set(emoji.name, emoji.url);
+        }
+    }
+    return unicodeUrlMap;
+}
+
+function isImageFile(file) {
+    return file.content_type?.startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(file.filename ?? "");
+}
+
+// Toutes les images d'un message (pièces jointes puis embeds), dans l'ordre d'affichage
+function getImages(message) {
+    const images = [];
     for (const file of message.attachments ?? []) {
-        const isImage = file.content_type?.startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(file.filename ?? "");
-        items.push(isImage
-            ? `<img src="${escapeHtml(file.proxy_url ?? file.url)}" alt="">`
-            : `<a class="sf-file" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">📎 ${escapeHtml(file.filename)}</a>`);
+        if (isImageFile(file)) images.push({ preview: file.proxy_url ?? file.url, full: file.proxy_url ?? file.url, original: file.url ?? file.proxy_url });
     }
     for (const embed of message.embeds ?? []) {
         const image = embed.image ?? embed.thumbnail;
-        if (image?.proxy_url || image?.url) items.push(`<img src="${escapeHtml(image.proxy_url ?? image.url)}" alt="">`);
+        if (image?.proxy_url || image?.url) images.push({ preview: image.proxy_url ?? image.url, full: image.proxy_url ?? image.url, original: image.url ?? image.proxy_url });
+    }
+    return images;
+}
+
+function renderAttachments(message, target) {
+    const items = getImages(message).map((image, index) =>
+        `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${index}">`);
+    for (const file of message.attachments ?? []) {
+        if (!isImageFile(file)) items.push(`<a class="sf-file" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">📎 ${escapeHtml(file.filename)}</a>`);
     }
     return items.length ? `<div class="sf-attachments">${items.join("")}</div>` : "";
 }
