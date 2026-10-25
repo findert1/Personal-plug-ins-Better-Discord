@@ -2,7 +2,7 @@
  * @name ServerFeed
  * @author findert
  * @description Shows every unread message of the server in one feed, grouped by channel with context, like a timeline. Mark channels as read as you go.
- * @version 1.2.1
+ * @version 1.2.3
  */
 
 const DEFAULT_SETTINGS = {
@@ -23,7 +23,7 @@ const DISCORD_EPOCH = 1420070400000n;
 
 const STORES = [
     "ChannelStore", "GuildChannelStore", "GuildStore", "SelectedGuildStore", "SelectedChannelStore", "ReadStateStore",
-    "UserGuildSettingsStore", "PermissionStore", "GuildMemberStore", "UserStore", "EmojiStore"
+    "UserGuildSettingsStore", "PermissionStore", "GuildMemberStore", "UserStore", "EmojiStore", "GuildRoleStore"
 ];
 const EMOJI_CATEGORIES = {
     people: "😀", nature: "🐻", food: "🍔", activity: "⚽",
@@ -179,12 +179,13 @@ const CSS = `
 .sf-reply span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-reply b { font-weight: 600; color: var(--interactive-normal, #b5bac1); }
 .sf-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.sf-attachments img { max-width: 240px; max-height: 180px; border-radius: 6px; cursor: zoom-in; }
+.sf-attachments img, .sf-attachments video { max-width: 240px; max-height: 180px; border-radius: 6px; cursor: zoom-in; }
+.sf-attachments video.sf-video { max-width: 400px; max-height: 260px; cursor: auto; background: #000; }
 .sf-viewer {
     position: fixed; inset: 0; z-index: 1001; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
     background: rgba(0,0,0,.85);
 }
-.sf-viewer img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 4px; }
+.sf-viewer img, .sf-viewer video { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 4px; }
 .sf-viewer-bar { display: flex; align-items: center; gap: 14px; font-size: 14px; color: #dbdee1; }
 .sf-viewer-bar a { color: #dbdee1; opacity: .8; text-decoration: none; }
 .sf-viewer-bar a:hover { opacity: 1; text-decoration: underline; }
@@ -695,7 +696,7 @@ module.exports = class ServerFeed {
         this.closeViewer();
 
         const viewer = el("div", "sf-viewer");
-        const img = el("img");
+        let img = el("img");
         const bar = el("div", "sf-viewer-bar");
         const counter = el("span");
         const link = el("a", "", "Open in Browser");
@@ -707,7 +708,11 @@ module.exports = class ServerFeed {
         let current = Math.min(Math.max(0, index || 0), images.length - 1);
         const show = step => {
             current = (current + step + images.length) % images.length;
-            img.src = images[current].full;
+            const media = el(images[current].video ? "video" : "img");
+            if (images[current].video) Object.assign(media, { autoplay: true, loop: true, muted: true, playsInline: true });
+            media.src = images[current].full;
+            img.replaceWith(media);
+            img = media;
             link.href = images[current].original;
             counter.textContent = images.length > 1 ? `${current + 1} / ${images.length}` : "";
         };
@@ -990,7 +995,7 @@ module.exports = class ServerFeed {
     }
 
     findMentionables(channelId, query) {
-        const { GuildMemberStore, UserStore, GuildStore } = this.stores;
+        const { GuildMemberStore, UserStore } = this.stores;
         const matches = (...names) => !query || names.some(name => name?.toLowerCase().includes(query));
         const seen = new Set();
         const users = [];
@@ -1017,9 +1022,7 @@ module.exports = class ServerFeed {
             addUser(UserStore?.getUser?.(member.userId), member);
         }
 
-        const guild = GuildStore?.getGuild?.(this.guildId);
-        const roleList = Object.values(GuildStore?.getRoles?.(this.guildId) ?? guild?.roles ?? {});
-        const roles = roleList
+        const roles = Object.values(this.getRoles())
             .filter(role => role.id !== this.guildId && role.mentionable && matches(role.name))
             .slice(0, 5)
             .map(role => ({ type: "role", id: role.id, label: role.name, color: role.colorString }));
@@ -1222,8 +1225,17 @@ module.exports = class ServerFeed {
         const focus = focused && this.panel.contains(focused)
             ? { channel: focused.dataset.channel, start: focused.selectionStart, end: focused.selectionEnd }
             : null;
+        // Les vidéos et GIF en cours sont gardés tels quels, pour ne pas les relancer à chaque nouveau message
+        const videos = new Map();
+        for (const video of this.panel.querySelectorAll(".sf-attachments video")) {
+            videos.set(videoKey(video), video);
+        }
         this.panel.innerHTML = html;
         this.lastHtml = html;
+        for (const video of this.panel.querySelectorAll(".sf-attachments video")) {
+            const old = videos.get(videoKey(video));
+            if (old) video.replaceWith(old);
+        }
         for (const input of this.panel.querySelectorAll(".sf-input")) {
             input.value = this.drafts.get(input.dataset.channel) ?? "";
             if (input.value) autoSize(input);
@@ -1372,6 +1384,29 @@ module.exports = class ServerFeed {
         return nick ?? author.global_name ?? author.globalName ?? author.username ?? "Unknown";
     }
 
+    // Rôles du serveur, par identifiant. Discord les a déplacés d'un store à l'autre selon les versions :
+    // on essaie les deux, et en dernier recours on les demande à l'API (une fois par serveur)
+    getRoles() {
+        const guildId = this.guildId;
+        const roleStore = this.stores.GuildRoleStore;
+        const found = roleStore?.getRolesSnapshot?.(guildId) ?? roleStore?.getRoles?.(guildId)
+            ?? this.stores.GuildStore?.getRoles?.(guildId) ?? this.stores.GuildStore?.getGuild?.(guildId)?.roles;
+        if (Array.isArray(found) && found.length) return Object.fromEntries(found.map(role => [role.id, role]));
+        if (found && Object.keys(found).length) return found;
+
+        this.roleCache ??= new Map();
+        if (!this.roleCache.has(guildId)) {
+            this.roleCache.set(guildId, {});
+            this.http.get({ url: `/guilds/${guildId}/roles` }).then(response => {
+                const list = Array.isArray(response?.body) ? response.body : JSON.parse(response?.text ?? "[]");
+                this.roleCache.set(guildId, Object.fromEntries(list.map(role => [role.id, role])));
+                this.lastHtml = "";
+                this.render();
+            }).catch(error => console.error(`[${this.meta.name}] couldn't load the roles`, error));
+        }
+        return this.roleCache.get(guildId);
+    }
+
     // Profil de la personne sur ce serveur (pseudo, photo et couleur de serveur).
     // Discord ne garde que les membres déjà vus : on lui demande les autres, puis on réaffiche
     getMember(userId) {
@@ -1425,8 +1460,11 @@ module.exports = class ServerFeed {
             return keep(`<span class="sf-mention" data-action="profile" data-user="${id}">@${escapeHtml(user ? this.getName(user) : mention ? this.getName(mention) : "user")}</span>`);
         });
         raw = raw.replace(/<@&(\d+)>/g, (_, id) => {
-            const role = this.stores.GuildStore?.getRole?.(this.guildId, id) ?? this.stores.GuildStore?.getGuild?.(this.guildId)?.roles?.[id];
-            return keep(`<span class="sf-mention">@${escapeHtml(role?.name ?? "role")}</span>`);
+            const role = this.getRoles()[id];
+            // Comme Discord : la mention prend la couleur du rôle
+            const color = role?.colorString ?? (role?.color ? `#${role.color.toString(16).padStart(6, "0")}` : null);
+            const style = color ? ` style="color: ${escapeHtml(color)}; background: color-mix(in srgb, ${escapeHtml(color)} 15%, transparent)"` : "";
+            return keep(`<span class="sf-mention"${style}>@${escapeHtml(role?.name ?? "unknown-role")}</span>`);
         });
         raw = raw.replace(/<#(\d+)>/g, (_, id) =>
             keep(`<span class="sf-mention">#${escapeHtml(this.stores.ChannelStore?.getChannel?.(id)?.name ?? "channel")}</span>`));
@@ -1603,17 +1641,33 @@ function getImages(message) {
         if (isImageFile(file)) images.push({ preview: file.proxy_url ?? file.url, full: file.proxy_url ?? file.url, original: file.url ?? file.proxy_url });
     }
     for (const embed of message.embeds ?? []) {
+        const video = embed.type === "gifv" ? embed.video : null;
+        if (video?.proxy_url || video?.url) {
+            const src = video.proxy_url ?? video.url;
+            images.push({ video: true, preview: src, full: src, original: embed.url ?? video.url ?? src });
+            continue;
+        }
         const image = embed.image ?? embed.thumbnail;
         if (image?.proxy_url || image?.url) images.push({ preview: image.proxy_url ?? image.url, full: image.proxy_url ?? image.url, original: image.url ?? image.proxy_url });
     }
     return images;
 }
 
+// Une vidéo est reconnue d'un affichage à l'autre par son message et son adresse
+function videoKey(video) {
+    return `${video.closest(".sf-msg")?.dataset.message}|${video.getAttribute("src")}`;
+}
+
 function renderAttachments(message, target) {
-    const items = getImages(message).map((image, index) =>
-        `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${index}">`);
+    const items = getImages(message).map((image, index) => image.video
+        ? `<video src="${escapeHtml(image.preview)}" autoplay loop muted playsinline data-action="image" ${target} data-index="${index}"></video>`
+        : `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${index}">`);
     for (const file of message.attachments ?? []) {
-        if (!isImageFile(file)) items.push(`<a class="sf-file" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">📎 ${escapeHtml(file.filename)}</a>`);
+        if (isImageFile(file)) continue;
+        // Vidéo envoyée en pièce jointe : lecteur avec les contrôles (un clic dessus ne fait rien d'autre)
+        if (file.content_type?.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(file.filename ?? "")) {
+            items.push(`<video class="sf-video" src="${escapeHtml(file.proxy_url ?? file.url)}" controls preload="metadata" data-action="media"></video>`);
+        } else items.push(`<a class="sf-file" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">📎 ${escapeHtml(file.filename)}</a>`);
     }
     return items.length ? `<div class="sf-attachments">${items.join("")}</div>` : "";
 }

@@ -56,7 +56,8 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Names, avatars and name colors are the ones from the server profile, like in the chat. Click a mention to open the profile.
 - Add or remove reactions (hover a message → **☺ +**, or click an existing reaction). The emoji picker has recent emojis, every server's custom emojis (with Nitro) and a search.
 - Messages are shown with Discord's Markdown: bold, italic, underline, strikethrough, spoilers, code, headers, quotes, lists, masked links and timestamps.
-- Click an image to open it full size, with arrows when a message has several.
+- Click an image to open it full size, with arrows when a message has several. GIFs play like in Discord and videos have a player.
+- Role mentions show the role's name and color.
 - Muted channels (and channels in muted categories) are left out. Settings: hide messages from bots, ignore muted channels (on by default).
 
 ## HelloWorld
