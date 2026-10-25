@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.1.1
+ * @version 1.1.2
  */
 
 const DEFAULT_SETTINGS = {
@@ -507,7 +507,14 @@ module.exports = class ChannelGrid {
         const lists = GuildChannelStore.getChannels(guildId) ?? {};
         const channels = [...(lists.SELECTABLE ?? []), ...(lists.VOCAL ?? [])]
             .map(entry => entry.channel)
-            .filter(channel => channel && ICONS[channel.type] && (this.canView(channel) || channel.isHidden?.()));
+            .filter(channel => channel && ICONS[channel.type] && (this.canView(channel) || this.isHiddenChannel(channel)));
+
+        // Les salons cachés de ShowHiddenChannels ne sont dans la liste ci-dessus que si Discord l'a recalculée
+        // après le démarrage de ShowHiddenChannels : on les reprend directement depuis tous les salons du serveur
+        const known = new Set(channels.map(channel => channel.id));
+        for (const channel of Object.values(ChannelStore.getMutableGuildChannelsForGuild?.(guildId) ?? {})) {
+            if (channel && !known.has(channel.id) && ICONS[channel.type] && this.isHiddenChannel(channel)) channels.push(channel);
+        }
 
         const selected = this.getSelectedId();
 
@@ -673,7 +680,7 @@ module.exports = class ChannelGrid {
             muted,
             voiceUsers,
             selected: channel.id === selected,
-            hidden: !this.canView(channel),
+            hidden: this.isHiddenChannel(channel),
             connected: channel.id === this.stores.SelectedChannelStore?.getVoiceChannelId?.(),
             unread: Boolean(ReadStateStore?.hasUnread?.(channel.id)),
             mentions: ReadStateStore?.getMentionCount?.(channel.id) ?? 0
@@ -686,6 +693,17 @@ module.exports = class ChannelGrid {
         const id = SelectedChannelStore?.getChannelId();
         const channel = id && ChannelStore.getChannel(id);
         return channel?.isThread?.() ? channel.parent_id : id;
+    }
+
+    // Salon caché affiché par ShowHiddenChannels ; toujours faux quand ce plugin n'est pas actif
+    isHiddenChannel(channel) {
+        try {
+            if (!BdApi.Plugins.isEnabled("ShowHiddenChannels")) return false;
+            const shc = BdApi.Plugins.get("ShowHiddenChannels")?.instance;
+            return typeof shc?.isHidden === "function" ? Boolean(shc.isHidden(channel)) : !this.canView(channel);
+        } catch {
+            return false;
+        }
     }
 
     canView(channel) {
