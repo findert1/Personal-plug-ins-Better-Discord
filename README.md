@@ -8,6 +8,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | [TextExpander](TextExpander.plugin.js) | Define your own commands (like `;gg`) that get replaced by full sentences when you send a message. |
 | [MessageScreenshot](MessageScreenshot.plugin.js) | Right-click a message to copy it (or the last few messages) to your clipboard as a clean image. |
 | [ChannelGrid](ChannelGrid.plugin.js) | Replaces the long server channel list with a cleaner grid of channel tiles grouped by category. |
+| [ServerFeed](ServerFeed.plugin.js) | A Twitter-like feed of every unread message in the server, with context, so you can catch up without opening each channel. |
 | [HelloWorld](HelloWorld.plugin.js) | Minimal example plugin that shows a "Hello World" toast. |
 
 ## StatusRotator
@@ -43,6 +44,16 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Hidden channels added by ShowHiddenChannels appear with a lock icon.
 - A Grid / List switch at the top brings back Discord's normal list at any time.
 - Settings: hide muted channels, show or hide voice members.
+
+## ServerFeed
+
+- Click **☰ Feed** at the top right of the chat (or press Ctrl+Shift+F) to see all the unread messages of the current server in one feed.
+- One card per channel, with the last few read messages greyed out above a "New" line for context, and "10 min later"-style separators when the conversation pauses.
+- **More context** loads older messages, **Jump to first unread** opens the channel at the right place, and clicking any message jumps to it.
+- **Mark read** marks the channel as read and removes its card; **Mark all read** clears the whole feed. **Refresh** reloads everything.
+- New messages appear live without moving the cards around; a channel you already marked read comes back at the bottom.
+- Write in a channel or reply to a message (hover it → **Reply**) straight from its card. TextExpander commands still work.
+- Muted channels (and channels in muted categories) are left out. Settings: hide messages from bots, ignore muted channels (on by default).
 
 ## HelloWorld
 
