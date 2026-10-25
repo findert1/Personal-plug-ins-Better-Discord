@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.1.2
+ * @version 1.1.3
  */
 
 const DEFAULT_SETTINGS = {
@@ -21,7 +21,8 @@ const SCROLL_METHODS = ["scrollTo", "scroll", "scrollBy"];
 const MENU_SELECTOR = '[class*="contextMenu"], [role="menu"]';
 const POPOUT_SELECTOR = '[class*="layerContainer"] [role="dialog"]';
 // Textes de la barre « nouveaux messages » de Discord (anglais et français)
-const NATIVE_BAR_TEXT = /^(new (unreads?|mentions?)|nouveaux messages non lus|nouvelles? mentions?)$/i;
+// Textes possibles de la barre de Discord (anglais et français, avec ou sans nombre devant)
+const NATIVE_BAR_TEXT = /^(\d+\s+)?(new (unreads?|unread messages?|mentions?|unread mentions?)|unread mentions?|nouveaux? messages?( non lus?)?|nouvelles? mentions?( non lues?)?|mentions? non lues?)$/i;
 
 // Icônes des types de salons (texte, vocal, annonces, scène, forum, média)
 const SVG_OPEN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">`;
