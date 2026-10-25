@@ -2,7 +2,7 @@
  * @name ServerFeed
  * @author findert
  * @description Shows every unread message of the server in one feed, grouped by channel with context, like a timeline. Mark channels as read as you go.
- * @version 1.1.0
+ * @version 1.2.1
  */
 
 const DEFAULT_SETTINGS = {
@@ -123,6 +123,20 @@ const CSS = `
 .sf-picker-grid button:hover { background: var(--background-modifier-hover, #393c41); }
 .sf-picker-grid button img { width: 28px; height: 28px; }
 .sf-picker-empty { color: var(--text-muted, #949ba4); padding: 12px 4px; font-size: 13px; }
+.sf-text .sf-mention[data-action] { cursor: pointer; }
+.sf-text .sf-mention[data-action]:hover { background: var(--brand-500, #5865f2); color: #fff; }
+
+.sf-suggest {
+    position: fixed; z-index: 1000; max-height: 300px; overflow-y: auto; padding: 6px; border-radius: 8px;
+    background: var(--background-base-low, var(--background-secondary, #2b2d31)); box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    border: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 12%, transparent);
+}
+.sf-suggest-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted, #949ba4); padding: 2px 6px 6px; }
+.sf-suggest-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text-normal, #dbdee1); }
+.sf-suggest-item.sf-active { background: var(--background-modifier-selected, #404249); }
+.sf-suggest-item img { width: 24px; height: 24px; border-radius: 50%; flex: none; }
+.sf-suggest-item .sf-role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; margin: 0 6px; }
+.sf-suggest-item small { margin-left: auto; color: var(--text-muted, #949ba4); font-size: 12px; }
 .sf-msg:hover { background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 6%, transparent); }
 .sf-msg.sf-grouped { padding-top: 0; }
 .sf-msg.sf-grouped .sf-avatar { visibility: hidden; height: 0; }
@@ -247,6 +261,7 @@ module.exports = class ServerFeed {
         this.transitionTo = Webpack.getByStrings("transitionTo - Transitioning to", { searchExports: true })
             ?? Webpack.getByKeys("transitionTo")?.transitionTo;
         this.profileActions = Webpack.getByKeys("openUserProfileModal");
+        this.memberActions = Webpack.getByKeys("requestMembersById");
 
         if (!this.dispatcher || !this.http || !this.stores.ReadStateStore) {
             BdApi.UI.showToast("ServerFeed: Discord modules not found", { type: "error" });
@@ -263,6 +278,9 @@ module.exports = class ServerFeed {
         this.panel.addEventListener("click", e => this.onClick(e));
         this.panel.addEventListener("input", e => this.onInput(e));
         this.panel.addEventListener("keydown", e => this.onKeyDown(e));
+        this.panel.addEventListener("focusout", e => {
+            if (this.suggest?.input === e.target) this.closeSuggestions();
+        });
         this.drafts = new Map();
         this.replyTo = new Map();
 
@@ -270,6 +288,11 @@ module.exports = class ServerFeed {
         this.onMessageUpdate = action => this.updateMessage(action.message);
         this.onMessageDelete = action => this.deleteMessage(action.channelId, action.id);
         this.onReactionAdd = action => this.applyReaction(action, 1);
+        this.onMembers = action => {
+            if (action.guildId !== this.guildId) return;
+            this.render();
+            if (this.suggest) this.updateSuggestions(this.suggest.input, false);
+        };
         this.onReactionRemove = action => this.applyReaction(action, -1);
         // Ouvrir un salon (ou changer de serveur) ferme le fil
         this.onChannelChange = () => {
@@ -381,6 +404,7 @@ module.exports = class ServerFeed {
         this.dispatcher.subscribe("MESSAGE_UPDATE", this.onMessageUpdate);
         this.dispatcher.subscribe("MESSAGE_DELETE", this.onMessageDelete);
         this.dispatcher.subscribe("MESSAGE_REACTION_ADD", this.onReactionAdd);
+        this.dispatcher.subscribe("GUILD_MEMBERS_CHUNK", this.onMembers);
         this.dispatcher.subscribe("MESSAGE_REACTION_REMOVE", this.onReactionRemove);
         this.ensure();
         this.refresh();
@@ -394,9 +418,11 @@ module.exports = class ServerFeed {
         this.dispatcher?.unsubscribe("MESSAGE_UPDATE", this.onMessageUpdate);
         this.dispatcher?.unsubscribe("MESSAGE_DELETE", this.onMessageDelete);
         this.dispatcher?.unsubscribe("MESSAGE_REACTION_ADD", this.onReactionAdd);
+        this.dispatcher?.unsubscribe("GUILD_MEMBERS_CHUNK", this.onMembers);
         this.dispatcher?.unsubscribe("MESSAGE_REACTION_REMOVE", this.onReactionRemove);
         this.closePicker();
         this.closeViewer();
+        this.closeSuggestions();
         this.panel?.remove();
         this.host?.removeAttribute("data-sf-host");
         this.host = null;
@@ -898,6 +924,7 @@ module.exports = class ServerFeed {
         if (!input) return;
         this.drafts.set(input.dataset.channel, input.value);
         autoSize(input);
+        this.updateSuggestions(input, true);
     }
 
     onKeyDown(e) {
@@ -906,6 +933,26 @@ module.exports = class ServerFeed {
         // Les raccourcis de Discord ne doivent pas intercepter ce qu'on tape ici
         if (!(e.ctrlKey && e.shiftKey && e.code === "KeyF")) e.stopPropagation();
         const channelId = input.dataset.channel;
+        // Liste des @ ouverte : les flèches, Entrée, Tab et Échap servent à la liste
+        if (this.suggest?.items.length) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const count = this.suggest.items.length;
+                this.suggest.index = (this.suggest.index + (e.key === "ArrowDown" ? 1 : -1) + count) % count;
+                this.drawSuggestions();
+                return;
+            }
+            if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                this.chooseSuggestion(this.suggest.index);
+                return;
+            }
+            if (e.key === "Escape") {
+                e.preventDefault();
+                this.closeSuggestions();
+                return;
+            }
+        }
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             this.send(channelId);
@@ -913,6 +960,142 @@ module.exports = class ServerFeed {
             e.preventDefault();
             this.cancelReply(channelId);
         }
+    }
+
+    // --- Mentions @ ---
+
+    // Cherche un « @texte » juste avant le curseur et propose les personnes, rôles, @everyone et @here
+    updateSuggestions(input, askDiscord) {
+        const before = input.value.slice(0, input.selectionStart);
+        const match = before.match(/(^|\s)@([^\s@]{0,32})$/);
+        if (!match) return this.closeSuggestions();
+        const query = match[2].toLowerCase();
+        const channelId = input.dataset.channel;
+        const items = this.findMentionables(channelId, query);
+
+        // Les membres pas encore chargés : Discord les cherche, la liste se met à jour quand ils arrivent
+        if (askDiscord && query) {
+            clearTimeout(this.searchTimer);
+            this.searchTimer = setTimeout(() => {
+                try {
+                    if (this.memberActions?.requestMembers) this.memberActions.requestMembers([this.guildId], query, 10);
+                    else this.dispatcher.dispatch({ type: "GUILD_MEMBERS_REQUEST", guildIds: [this.guildId], query, limit: 10, presences: false });
+                } catch {}
+            }, 250);
+        }
+
+        const sameSpot = this.suggest?.input === input && this.suggest.start === before.length - match[2].length - 1;
+        this.suggest = { input, channelId, start: before.length - match[2].length - 1, end: before.length, items, index: sameSpot ? Math.min(this.suggest.index, Math.max(0, items.length - 1)) : 0 };
+        this.drawSuggestions();
+    }
+
+    findMentionables(channelId, query) {
+        const { GuildMemberStore, UserStore, GuildStore } = this.stores;
+        const matches = (...names) => !query || names.some(name => name?.toLowerCase().includes(query));
+        const seen = new Set();
+        const users = [];
+        const addUser = (user, member) => {
+            if (!user || seen.has(user.id) || users.length >= 10) return;
+            const nick = member?.nick ?? GuildMemberStore?.getNick?.(this.guildId, user.id);
+            if (!matches(nick, user.globalName ?? user.global_name, user.username)) return;
+            seen.add(user.id);
+            users.push({
+                type: "user", id: user.id, label: nick ?? user.globalName ?? user.global_name ?? user.username, tag: user.username,
+                avatar: getAvatar(user, member ?? GuildMemberStore?.getMember?.(this.guildId, user.id), this.guildId)
+            });
+        };
+
+        // Les gens de la conversation d'abord, du plus récent au plus ancien
+        const card = this.cards.get(channelId);
+        const recent = card ? [...card.context, ...card.unread].reverse() : [];
+        for (const message of recent) {
+            if (message.webhook_id) continue;
+            addUser(UserStore?.getUser?.(message.author?.id) ?? normalizeUser(message.author));
+        }
+        for (const member of GuildMemberStore?.getMembers?.(this.guildId) ?? []) {
+            if (users.length >= 10) break;
+            addUser(UserStore?.getUser?.(member.userId), member);
+        }
+
+        const guild = GuildStore?.getGuild?.(this.guildId);
+        const roleList = Object.values(GuildStore?.getRoles?.(this.guildId) ?? guild?.roles ?? {});
+        const roles = roleList
+            .filter(role => role.id !== this.guildId && role.mentionable && matches(role.name))
+            .slice(0, 5)
+            .map(role => ({ type: "role", id: role.id, label: role.name, color: role.colorString }));
+        const special = ["everyone", "here"].filter(name => matches(name)).map(name => ({ type: "special", id: name, label: name }));
+        return [...users, ...roles, ...special];
+    }
+
+    drawSuggestions() {
+        const suggest = this.suggest;
+        if (!suggest?.items.length) {
+            this.suggestEl?.remove();
+            this.suggestEl = null;
+            return;
+        }
+        if (!this.suggestEl) {
+            this.suggestEl = el("div", "sf-suggest");
+            // mousedown : on choisit avant que la zone de texte perde le focus
+            this.suggestEl.addEventListener("mousedown", e => {
+                const item = e.target.closest("[data-index]");
+                if (!item) return;
+                e.preventDefault();
+                this.chooseSuggestion(Number(item.dataset.index));
+            });
+            document.body.append(this.suggestEl);
+        }
+        this.suggestEl.innerHTML = `<div class="sf-suggest-title">Members</div>` + suggest.items.map((item, index) => {
+            const icon = item.type === "user" ? `<img src="${escapeHtml(item.avatar)}" alt="">`
+                : `<span class="sf-role-dot" style="background: ${escapeHtml(item.color ?? "#99aab5")}"></span>`;
+            const extra = item.type === "user" ? item.tag : item.type === "role" ? "role" : "";
+            return `<div class="sf-suggest-item${index === suggest.index ? " sf-active" : ""}" data-index="${index}">
+                ${icon}<span>@${escapeHtml(item.label)}</span><small>${escapeHtml(extra ?? "")}</small></div>`;
+        }).join("");
+
+        // Juste au-dessus de la zone de texte, de la même largeur
+        const rect = suggest.input.getBoundingClientRect();
+        this.suggestEl.style.left = `${rect.left}px`;
+        this.suggestEl.style.width = `${Math.max(260, rect.width)}px`;
+        this.suggestEl.style.top = "";
+        this.suggestEl.style.bottom = `${window.innerHeight - rect.top + 6}px`;
+        this.suggestEl.querySelector(".sf-active")?.scrollIntoView({ block: "nearest" });
+    }
+
+    chooseSuggestion(index) {
+        const suggest = this.suggest;
+        const item = suggest?.items[index];
+        if (!item) return;
+        const { channelId } = suggest;
+        // Le fil a pu être réaffiché entre-temps : on reprend la zone de texte actuelle
+        const input = this.panel.querySelector(`.sf-input[data-channel="${channelId}"]`) ?? suggest.input;
+        const text = `@${item.label}`;
+        const value = item.type === "user" ? `<@${item.id}>` : item.type === "role" ? `<@&${item.id}>` : `@${item.id}`;
+        (this.mentions ??= new Map());
+        const list = this.mentions.get(channelId) ?? [];
+        if (!list.some(mention => mention.text === text)) list.push({ text, value });
+        this.mentions.set(channelId, list);
+
+        input.value = `${input.value.slice(0, suggest.start)}${text} ${input.value.slice(suggest.end)}`;
+        const cursor = suggest.start + text.length + 1;
+        input.setSelectionRange(cursor, cursor);
+        this.drafts.set(channelId, input.value);
+        autoSize(input);
+        this.closeSuggestions();
+        input.focus();
+    }
+
+    closeSuggestions() {
+        this.suggest = null;
+        this.suggestEl?.remove();
+        this.suggestEl = null;
+    }
+
+    // Les « @Pseudo » choisis dans la liste deviennent de vraies mentions (les plus longs d'abord)
+    applyMentions(channelId, content) {
+        const list = [...(this.mentions?.get(channelId) ?? [])].sort((a, b) => b.text.length - a.text.length);
+        for (const { text, value } of list) content = content.split(text).join(value);
+        return content;
     }
 
     startReply(channelId, messageId) {
@@ -966,7 +1149,7 @@ module.exports = class ServerFeed {
 
         // L'envoi de Discord attend que le salon soit ouvert : on passe directement par l'API.
         // TextExpander ne voit donc pas passer le message, on lui demande de le remplacer nous-mêmes
-        const message = { content };
+        const message = { content: this.applyMentions(channelId, content) };
         try {
             if (BdApi.Plugins.isEnabled("TextExpander")) BdApi.Plugins.get("TextExpander")?.instance?.expandMessage?.(message);
         } catch {}
@@ -983,6 +1166,8 @@ module.exports = class ServerFeed {
                 }
             });
             this.drafts.delete(channelId);
+            this.mentions?.delete(channelId);
+            this.closeSuggestions();
             this.replyTo.delete(channelId);
             this.lastHtml = "";
             this.render();
@@ -1155,19 +1340,22 @@ module.exports = class ServerFeed {
             </div>` : "";
 
         const name = this.getName(author);
+        // Pas de membre pour un webhook : son auteur n'existe pas vraiment sur le serveur
+        const member = message.webhook_id ? null : this.getMember(author.id);
+        const color = member?.colorString ? ` style="color: ${escapeHtml(member.colorString)}"` : "";
         const reply = message.referenced_message
             ? `<div class="sf-reply">↪ <span><b>${escapeHtml(this.getName(message.referenced_message.author ?? {}))}</b> ${escapeHtml(stripText(message.referenced_message.content))}</span></div>`
             : "";
         const meta = grouped ? "" : `
             <div class="sf-meta">
-                <span class="sf-author" data-action="profile" data-user="${escapeHtml(author.id ?? "")}">${escapeHtml(name)}</span>
+                <span class="sf-author" data-action="profile" data-user="${escapeHtml(author.id ?? "")}"${color}>${escapeHtml(name)}</span>
                 ${author.bot ? `<span class="sf-bot">BOT</span>` : ""}
                 <span class="sf-time">${formatTime(idToTime(message.id))}</span>
             </div>`;
 
         return `
             <div class="${classes.join(" ")}" data-action="jump" data-channel="${escapeHtml(message.channel_id)}" data-message="${escapeHtml(message.id)}">
-                <img class="sf-avatar" src="${escapeHtml(getAvatar(author))}" alt="" data-action="profile" data-user="${escapeHtml(author.id ?? "")}">
+                <img class="sf-avatar" src="${escapeHtml(getAvatar(author, member, this.guildId))}" alt="" data-action="profile" data-user="${escapeHtml(author.id ?? "")}">
                 ${replyButton}
                 <div class="sf-body">
                     ${reply}${meta}
@@ -1179,10 +1367,44 @@ module.exports = class ServerFeed {
     }
 
     getName(author) {
-        return this.stores.GuildMemberStore?.getNick?.(this.guildId, author.id) ?? author.global_name ?? author.username ?? "Unknown";
+        // Pseudo du serveur en priorité (le membre est demandé à Discord s'il n'est pas encore chargé)
+        const nick = author.id ? this.getMember(author.id)?.nick : null;
+        return nick ?? author.global_name ?? author.globalName ?? author.username ?? "Unknown";
     }
 
-    // Texte du message : mentions, salons, emojis personnalisés et liens
+    // Profil de la personne sur ce serveur (pseudo, photo et couleur de serveur).
+    // Discord ne garde que les membres déjà vus : on lui demande les autres, puis on réaffiche
+    getMember(userId) {
+        if (!userId) return null;
+        const member = this.stores.GuildMemberStore?.getMember?.(this.guildId, userId);
+        if (member) return member;
+        this.requestedMembers ??= new Set();
+        const key = `${this.guildId}:${userId}`;
+        if (!this.requestedMembers.has(key)) {
+            this.requestedMembers.add(key);
+            (this.missingMembers ??= new Set()).add(userId);
+            this.memberTimer ??= setTimeout(() => this.requestMembers(), 200);
+        }
+        return null;
+    }
+
+    requestMembers() {
+        this.memberTimer = null;
+        const ids = [...(this.missingMembers ?? [])];
+        this.missingMembers = new Set();
+        if (!ids.length) return;
+        for (let i = 0; i < ids.length; i += 100) {
+            try {
+                const userIds = ids.slice(i, i + 100);
+                // Sans le module de Discord, on envoie nous-mêmes la demande qu'il aurait faite
+                if (this.memberActions?.requestMembersById) this.memberActions.requestMembersById(this.guildId, userIds);
+                else this.dispatcher.dispatch({ type: "GUILD_MEMBERS_REQUEST", guildIds: [this.guildId], userIds, presences: false });
+            } catch (error) {
+                console.error(`[${this.meta.name}] couldn't request members`, error);
+            }
+        }
+    }
+
     // Markdown de Discord. Le code, les liens, les mentions et les emojis sont mis de côté d'abord
     // (remplacés par des repères), pour que leurs * ou _ ne soient pas pris pour de la mise en forme
     renderContent(message) {
@@ -1200,7 +1422,7 @@ module.exports = class ServerFeed {
         raw = raw.replace(/<@!?(\d+)>/g, (_, id) => {
             const user = this.stores.UserStore?.getUser?.(id);
             const mention = message.mentions?.find(item => item.id === id);
-            return keep(`<span class="sf-mention">@${escapeHtml(user ? this.getName(user) : mention ? this.getName(mention) : "user")}</span>`);
+            return keep(`<span class="sf-mention" data-action="profile" data-user="${id}">@${escapeHtml(user ? this.getName(user) : mention ? this.getName(mention) : "user")}</span>`);
         });
         raw = raw.replace(/<@&(\d+)>/g, (_, id) => {
             const role = this.stores.GuildStore?.getRole?.(this.guildId, id) ?? this.stores.GuildStore?.getGuild?.(this.guildId)?.roles?.[id];
@@ -1396,7 +1618,13 @@ function renderAttachments(message, target) {
     return items.length ? `<div class="sf-attachments">${items.join("")}</div>` : "";
 }
 
-function getAvatar(author) {
+// Auteur venant de l'API (global_name) au format des utilisateurs de Discord (globalName)
+function normalizeUser(author) {
+    return author?.id ? { ...author, globalName: author.global_name } : null;
+}
+
+function getAvatar(author, member, guildId) {
+    if (member?.avatar) return `https://cdn.discordapp.com/guilds/${guildId}/users/${author.id}/avatars/${member.avatar}.webp?size=64`;
     if (author.avatar) return `https://cdn.discordapp.com/avatars/${author.id}/${author.avatar}.webp?size=64`;
     const index = author.id ? Number((BigInt(author.id) >> 22n) % 6n) : 0;
     return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
