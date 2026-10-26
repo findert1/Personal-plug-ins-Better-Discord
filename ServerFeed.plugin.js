@@ -2,7 +2,7 @@
  * @name ServerFeed
  * @author findert
  * @description Shows every unread message of the server in one feed, grouped by channel with context, like a timeline. Mark channels as read as you go.
- * @version 1.2.3
+ * @version 1.2.5
  */
 
 const DEFAULT_SETTINGS = {
@@ -52,7 +52,7 @@ const CSS = `
 .sf-btn.sf-primary:hover { filter: brightness(1.1); }
 .sf-btn:disabled { opacity: .5; cursor: default; }
 .sf-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px; }
-.sf-feed { width: 100%; max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.sf-feed { width: 100%; max-width: max(760px, min(1200px, 85%)); margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 .sf-empty { text-align: center; color: var(--text-muted, #949ba4); padding: 60px 0; font-size: 15px; }
 
 .sf-card {
@@ -179,7 +179,7 @@ const CSS = `
 .sf-reply span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sf-reply b { font-weight: 600; color: var(--interactive-normal, #b5bac1); }
 .sf-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.sf-attachments img, .sf-attachments video { max-width: 240px; max-height: 180px; border-radius: 6px; cursor: zoom-in; }
+.sf-attachments img, .sf-attachments video { max-width: min(400px, 100%); max-height: 300px; border-radius: 6px; cursor: zoom-in; }
 .sf-attachments video.sf-video { max-width: 400px; max-height: 260px; cursor: auto; background: #000; }
 .sf-viewer {
     position: fixed; inset: 0; z-index: 1001; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
@@ -1356,7 +1356,7 @@ module.exports = class ServerFeed {
         const member = message.webhook_id ? null : this.getMember(author.id);
         const color = member?.colorString ? ` style="color: ${escapeHtml(member.colorString)}"` : "";
         const reply = message.referenced_message
-            ? `<div class="sf-reply">↪ <span><b>${escapeHtml(this.getName(message.referenced_message.author ?? {}))}</b> ${escapeHtml(stripText(message.referenced_message.content))}</span></div>`
+            ? `<div class="sf-reply">↪ <span><b>${escapeHtml(this.getName(message.referenced_message.author ?? {}))}</b> ${escapeHtml(stripText(this.plainText(message.referenced_message)))}</span></div>`
             : "";
         const meta = grouped ? "" : `
             <div class="sf-meta">
@@ -1438,6 +1438,19 @@ module.exports = class ServerFeed {
                 console.error(`[${this.meta.name}] couldn't request members`, error);
             }
         }
+    }
+
+    // Texte d'une ligne (aperçu du message auquel on répond) : mentions, salons et emojis lisibles
+    plainText(message) {
+        return String(message.content ?? "")
+            .replace(/<@!?(\d+)>/g, (_, id) => {
+                const user = this.stores.UserStore?.getUser?.(id) ?? normalizeUser(message.mentions?.find(item => item.id === id));
+                return `@${user ? this.getName(user) : "user"}`;
+            })
+            .replace(/<@&(\d+)>/g, (_, id) => `@${this.getRoles()[id]?.name ?? "unknown-role"}`)
+            .replace(/<#(\d+)>/g, (_, id) => `#${this.stores.ChannelStore?.getChannel?.(id)?.name ?? "channel"}`)
+            .replace(/<a?:(\w+):\d+>/g, (_, name) => `:${name}:`)
+            .replace(/<t:(-?\d+)(?::([tTdDfFR]))?>/g, (_, time, style) => formatTimestamp(Number(time) * 1000, style));
     }
 
     // Markdown de Discord. Le code, les liens, les mentions et les emojis sont mis de côté d'abord
