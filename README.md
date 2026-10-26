@@ -54,10 +54,13 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - New messages appear live without moving the cards around; a channel you already marked read comes back at the bottom.
 - Write in a channel or reply to a message (hover it → **Reply**) straight from its card, with an emoji button and @mention suggestions (members, roles, @everyone, @here). TextExpander commands still work.
 - Names, avatars and name colors are the ones from the server profile, like in the chat. Click a mention to open the profile.
+- Messages that mention you (directly, through one of your roles, or with @everyone/@here) are highlighted like in Discord, and their channels come first with a red **@** badge.
+- Edit your own messages from the feed (hover → **Edit**, or press ↑ in an empty message box).
+- Stickers are shown as images.
 - Add or remove reactions (hover a message → **☺ +**, or click an existing reaction). The emoji picker has recent emojis, every server's custom emojis (with Nitro) and a search.
 - Messages are shown with Discord's Markdown: bold, italic, underline, strikethrough, spoilers, code, headers, quotes, lists, masked links and timestamps.
 - Click an image to open it full size, with arrows when a message has several. GIFs play like in Discord and videos have a player.
-- Role mentions show the role's name and color.
+- Role mentions show the role's name and color. Channel mentions and copied channel or message links show as **#channel** (with a 💬 for a message) and open it when clicked.
 - Muted channels (and channels in muted categories) are left out. Settings: hide messages from bots, ignore muted channels (on by default).
 
 ## HelloWorld

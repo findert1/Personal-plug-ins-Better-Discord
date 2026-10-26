@@ -2,7 +2,7 @@
  * @name ServerFeed
  * @author findert
  * @description Shows every unread message of the server in one feed, grouped by channel with context, like a timeline. Mark channels as read as you go.
- * @version 1.2.5
+ * @version 1.4.1
  */
 
 const DEFAULT_SETTINGS = {
@@ -215,13 +215,24 @@ const CSS = `
 .sf-replybar button:hover { color: var(--interactive-active, #fff); }
 .sf-input-row { display: flex; gap: 8px; align-items: flex-end; }
 .sf-input-row .sf-emoji-btn { font-size: 18px; padding: 3px 10px; }
-.sf-input {
+.sf-input, .sf-edit-input {
     flex: 1; min-width: 0; resize: none; max-height: 140px; border: none; outline: none; border-radius: 8px; padding: 8px 10px;
     font: inherit; font-size: 14px; line-height: 1.35; color: var(--text-normal, #dbdee1);
     background: var(--background-base-lowest, var(--background-tertiary, #1e1f22));
 }
 .sf-replybar + .sf-input-row .sf-input { border-top-left-radius: 0; border-top-right-radius: 0; }
 .sf-own .sf-author { color: var(--brand-360, #949cf7); }
+.sf-msg.sf-mentioned { background: var(--background-mentioned, rgba(240, 177, 50, .1)); box-shadow: inset 2px 0 0 var(--info-warning-foreground, #f0b232); }
+.sf-msg.sf-mentioned:hover { background: var(--background-mentioned-hover, rgba(240, 177, 50, .14)); }
+.sf-card.sf-has-mention { border-color: color-mix(in srgb, var(--info-warning-foreground, #f0b232) 55%, transparent); }
+.sf-mention-badge { font-size: 12px; font-weight: 700; color: #fff; background: var(--status-danger, #f23f43); border-radius: 10px; padding: 1px 7px; }
+.sf-stickers { display: flex; gap: 6px; margin-top: 4px; }
+.sf-sticker { width: 160px; height: 160px; object-fit: contain; }
+.sf-lottie:not(.sf-ready) { width: auto; height: auto; }
+.sf-edit { margin-top: 4px; cursor: auto; }
+.sf-edit-input { display: block; width: 100%; box-sizing: border-box; }
+.sf-edit-hint { font-size: 12px; color: var(--text-muted, #949ba4); margin-top: 3px; }
+.sf-edit-hint span { color: var(--text-link, #00a8fc); cursor: pointer; }
 .sf-card-actions {
     display: flex; gap: 8px; padding: 8px 14px; justify-content: flex-end;
     border-top: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 8%, transparent);
@@ -424,6 +435,7 @@ module.exports = class ServerFeed {
         this.closePicker();
         this.closeViewer();
         this.closeSuggestions();
+        this.editing = null;
         this.panel?.remove();
         this.host?.removeAttribute("data-sf-host");
         this.host = null;
@@ -633,9 +645,9 @@ module.exports = class ServerFeed {
         for (const channelId of [...this.cards.keys()]) await this.markRead(channelId);
     }
 
-    jumpTo(channelId, messageId) {
+    jumpTo(channelId, messageId, guildId = this.guildId) {
         this.close();
-        this.transitionTo?.(`/channels/${this.guildId}/${channelId}${messageId ? `/${messageId}` : ""}`);
+        this.transitionTo?.(`/channels/${guildId}/${channelId}${messageId ? `/${messageId}` : ""}`);
     }
 
     openProfile(userId) {
@@ -665,9 +677,12 @@ module.exports = class ServerFeed {
         else if (name === "context") this.loadMoreContext(channel);
         else if (name === "more") this.loadMoreUnread(channel);
         else if (name === "profile") this.openProfile(user);
-        else if (name === "jump") this.jumpTo(channel, message);
+        else if (name === "jump") this.jumpTo(channel, message, action.dataset.guild);
         else if (name === "reply") this.startReply(channel, message);
         else if (name === "cancel-reply") this.cancelReply(channel);
+        else if (name === "edit") this.startEdit(channel, message);
+        else if (name === "cancel-edit") this.cancelEdit();
+        else if (name === "save-edit") this.saveEdit();
         else if (name === "send") this.send(channel);
         else if (name === "emoji") {
             const input = this.panel.querySelector(`.sf-input[data-channel="${channel}"]`);
@@ -925,6 +940,12 @@ module.exports = class ServerFeed {
     // --- Répondre depuis le fil ---
 
     onInput(e) {
+        const edit = e.target.closest(".sf-edit-input");
+        if (edit && this.editing) {
+            this.editing.draft = edit.value;
+            autoSize(edit);
+            return;
+        }
         const input = e.target.closest(".sf-input");
         if (!input) return;
         this.drafts.set(input.dataset.channel, input.value);
@@ -933,6 +954,18 @@ module.exports = class ServerFeed {
     }
 
     onKeyDown(e) {
+        // Modification d'un message : Entrée enregistre, Échap annule
+        if (e.target.closest(".sf-edit-input")) {
+            e.stopPropagation();
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                this.saveEdit();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                this.cancelEdit();
+            }
+            return;
+        }
         const input = e.target.closest(".sf-input");
         if (!input) return;
         // Les raccourcis de Discord ne doivent pas intercepter ce qu'on tape ici
@@ -964,6 +997,78 @@ module.exports = class ServerFeed {
         } else if (e.key === "Escape" && this.replyTo.has(channelId)) {
             e.preventDefault();
             this.cancelReply(channelId);
+        } else if (e.key === "ArrowUp" && !input.value) {
+            // Comme Discord : flèche du haut dans une zone vide = modifier son dernier message
+            const me = this.stores.UserStore?.getCurrentUser?.()?.id;
+            const card = this.cards.get(channelId);
+            const last = card && [...card.context, ...card.unread].reverse()
+                .find(message => message.author?.id === me && !message.sfDeleted && !message.webhook_id);
+            if (last) {
+                e.preventDefault();
+                this.startEdit(channelId, last.id);
+            }
+        }
+    }
+
+    // --- Modification de ses messages ---
+
+    startEdit(channelId, messageId) {
+        const message = this.findMessage(channelId, messageId);
+        if (!message) return;
+        // Les mentions s'affichent « @Pseudo » pendant la modification et redeviennent de vraies mentions à l'enregistrement
+        (this.mentions ??= new Map());
+        const list = this.mentions.get(channelId) ?? [];
+        const remember = (text, value) => {
+            if (!list.some(mention => mention.text === text)) list.push({ text, value });
+            return text;
+        };
+        const draft = String(message.content ?? "")
+            .replace(/<@!?(\d+)>/g, (value, id) => {
+                const user = this.stores.UserStore?.getUser?.(id) ?? normalizeUser(message.mentions?.find(item => item.id === id));
+                return user ? remember(`@${this.getName(user)}`, value) : value;
+            })
+            .replace(/<@&(\d+)>/g, (value, id) => {
+                const role = this.getRoles()[id];
+                return role ? remember(`@${role.name}`, value) : value;
+            });
+        this.mentions.set(channelId, list);
+        this.editing = { channelId, messageId, draft };
+        this.lastHtml = "";
+        this.render();
+        const input = this.panel.querySelector(".sf-edit-input");
+        if (input) {
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+        }
+    }
+
+    cancelEdit() {
+        const channelId = this.editing?.channelId;
+        this.editing = null;
+        this.lastHtml = "";
+        this.render();
+        if (channelId) this.focusInput(channelId);
+    }
+
+    async saveEdit() {
+        const editing = this.editing;
+        if (!editing || this.saving) return;
+        const message = this.findMessage(editing.channelId, editing.messageId);
+        const content = this.applyMentions(editing.channelId, editing.draft.trim());
+        // Texte vide : Discord propose de supprimer, ici on annule simplement
+        if (!message || !content || content === message.content) return this.cancelEdit();
+
+        this.saving = true;
+        try {
+            await this.http.patch({ url: `/channels/${editing.channelId}/messages/${editing.messageId}`, body: { content } });
+            // Mise à jour tout de suite, sans attendre l'évènement de Discord
+            Object.assign(message, { content, edited_timestamp: new Date().toISOString() });
+            this.cancelEdit();
+        } catch (error) {
+            console.error(`[${this.meta.name}] couldn't edit the message`, error);
+            BdApi.UI.showToast("ServerFeed: couldn't edit the message", { type: "error" });
+        } finally {
+            this.saving = false;
         }
     }
 
@@ -1190,9 +1295,10 @@ module.exports = class ServerFeed {
         const guild = this.stores.GuildStore?.getGuild?.(this.guildId);
         const cards = [...this.cards.values()]
             .filter(card => this.visibleMessages(card.unread).length)
-            .sort((a, b) => a.order === null || b.order === null
+            // Les salons où l'on est mentionné passent en premier
+            .sort((a, b) => (this.countMentions(b) > 0) - (this.countMentions(a) > 0) || (a.order === null || b.order === null
                 ? compareIds(b.unread[b.unread.length - 1], a.unread[a.unread.length - 1])
-                : a.order - b.order);
+                : a.order - b.order));
         const total = cards.reduce((sum, card) => sum + this.countUnread(card), 0);
 
         const status = this.loading
@@ -1221,27 +1327,39 @@ module.exports = class ServerFeed {
         const anchorId = anchor?.dataset.channel;
         const offset = anchor ? anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top : 0;
         const top = scroll?.scrollTop ?? 0;
-        const focused = document.activeElement?.closest?.(".sf-input");
+        const focused = document.activeElement?.closest?.(".sf-input, .sf-edit-input");
         const focus = focused && this.panel.contains(focused)
-            ? { channel: focused.dataset.channel, start: focused.selectionStart, end: focused.selectionEnd }
+            ? { edit: focused.matches(".sf-edit-input"), channel: focused.dataset.channel, start: focused.selectionStart, end: focused.selectionEnd }
             : null;
         // Les vidéos et GIF en cours sont gardés tels quels, pour ne pas les relancer à chaque nouveau message
         const videos = new Map();
         for (const video of this.panel.querySelectorAll(".sf-attachments video")) {
             videos.set(videoKey(video), video);
         }
+        const stickers = new Map();
+        for (const sticker of this.panel.querySelectorAll(".sf-lottie.sf-ready")) stickers.set(sticker.dataset.key, sticker);
         this.panel.innerHTML = html;
         this.lastHtml = html;
         for (const video of this.panel.querySelectorAll(".sf-attachments video")) {
             const old = videos.get(videoKey(video));
             if (old) video.replaceWith(old);
         }
+        for (const sticker of this.panel.querySelectorAll(".sf-lottie")) {
+            const old = stickers.get(sticker.dataset.key);
+            if (old) sticker.replaceWith(old);
+            else this.playSticker(sticker);
+        }
         for (const input of this.panel.querySelectorAll(".sf-input")) {
             input.value = this.drafts.get(input.dataset.channel) ?? "";
             if (input.value) autoSize(input);
         }
+        const edit = this.panel.querySelector(".sf-edit-input");
+        if (edit) {
+            edit.value = this.editing?.draft ?? "";
+            autoSize(edit);
+        }
         if (focus) {
-            const input = this.panel.querySelector(`.sf-input[data-channel="${focus.channel}"]`);
+            const input = focus.edit ? edit : this.panel.querySelector(`.sf-input[data-channel="${focus.channel}"]`);
             input?.focus();
             input?.setSelectionRange(focus.start, focus.end);
         }
@@ -1256,6 +1374,50 @@ module.exports = class ServerFeed {
     countUnread(card) {
         const me = this.stores.UserStore?.getCurrentUser?.()?.id;
         return this.visibleMessages(card.unread).filter(message => message.author?.id !== me).length;
+    }
+
+    // Sticker Lottie : on récupère son animation (une fois par sticker) et on la joue avec le lecteur Lottie de Discord
+    async playSticker(node) {
+        this.lottie ??= BdApi.Webpack.getModule(m => typeof m?.loadAnimation === "function" && typeof m?.destroy === "function", { searchExports: true });
+        if (!this.lottie) return;
+        const id = node.dataset.sticker;
+        this.stickerData ??= new Map();
+        if (!this.stickerData.has(id)) {
+            const load = async () => {
+                for (const url of [`https://media.discordapp.net/stickers/${id}.json`, `https://discord.com/stickers/${id}.json`]) {
+                    try {
+                        const response = await fetch(url);
+                        if (response.ok) return await response.json();
+                    } catch {}
+                }
+                return null;
+            };
+            this.stickerData.set(id, load());
+        }
+        const data = await this.stickerData.get(id);
+        if (!data || !node.isConnected || node.classList.contains("sf-ready")) return;
+        node.textContent = "";
+        node.classList.add("sf-ready");
+        try {
+            this.lottie.loadAnimation({ container: node, renderer: "svg", loop: true, autoplay: true, animationData: data });
+        } catch (error) {
+            console.error(`[${this.meta.name}] couldn't play the sticker`, error);
+        }
+    }
+
+    countMentions(card) {
+        return this.visibleMessages(card.unread).filter(message => this.mentionsMe(message)).length;
+    }
+
+    // Comme Discord : mention directe, @everyone / @here (sauf si on les a coupés) ou un de nos rôles
+    mentionsMe(message) {
+        const me = this.stores.UserStore?.getCurrentUser?.()?.id;
+        if (!me || message.sfDeleted || message.author?.id === me) return false;
+        if (message.mentions?.some(user => (user?.id ?? user) === me)) return true;
+        if (message.mention_everyone && !this.stores.UserGuildSettingsStore?.isSuppressEveryoneEnabled?.(this.guildId)) return true;
+        if (!message.mention_roles?.length || this.stores.UserGuildSettingsStore?.isSuppressRolesEnabled?.(this.guildId)) return false;
+        const roles = this.getMember(me)?.roles ?? [];
+        return message.mention_roles.some(id => roles.includes(id));
     }
 
     visibleMessages(messages) {
@@ -1287,11 +1449,13 @@ module.exports = class ServerFeed {
         }
 
         const id = escapeHtml(card.channelId);
+        const mentions = this.countMentions(card);
         return `
-            <div class="sf-card" data-channel="${card.channelId}">
+            <div class="sf-card${mentions ? " sf-has-mention" : ""}" data-channel="${card.channelId}">
                 <div class="sf-card-head" data-action="jump" data-channel="${id}">
                     <span class="sf-channel">#${escapeHtml(channel?.name ?? "unknown")}</span>
                     ${category ? `<span class="sf-category">${escapeHtml(category.name)}</span>` : ""}
+                    ${mentions ? `<span class="sf-mention-badge" title="${mentions} mention${mentions === 1 ? "" : "s"}">@${mentions}</span>` : ""}
                     <span class="sf-count">${this.countUnread(card)}${card.truncated ? "+" : ""} · ${formatTime(lastTime)}</span>
                 </div>
                 <div class="sf-messages">${rows.join("")}</div>
@@ -1335,11 +1499,15 @@ module.exports = class ServerFeed {
         if (isContext) classes.push("sf-context");
         if (message.sfDeleted) classes.push("sf-deleted");
         if (this.replyTo.get(message.channel_id) === message.id) classes.push("sf-replying");
-        if (author.id && author.id === this.stores.UserStore?.getCurrentUser?.()?.id) classes.push("sf-own");
+        const own = Boolean(author.id && author.id === this.stores.UserStore?.getCurrentUser?.()?.id);
+        if (own) classes.push("sf-own");
+        if (this.mentionsMe(message)) classes.push("sf-mentioned");
         const target = `data-channel="${escapeHtml(message.channel_id)}" data-message="${escapeHtml(message.id)}"`;
-        const replyButton = message.sfDeleted ? "" : `
+        const editing = this.editing?.messageId === message.id;
+        const replyButton = message.sfDeleted || editing ? "" : `
             <div class="sf-msg-tools">
                 <button data-action="add-reaction" ${target} title="Add Reaction">☺ +</button>
+                ${own && !message.webhook_id ? `<button data-action="edit" ${target}>✎ Edit</button>` : ""}
                 <button data-action="reply" ${target}>↩ Reply</button>
             </div>`;
         const reactions = message.reactions?.length && !message.sfDeleted ? `
@@ -1371,7 +1539,13 @@ module.exports = class ServerFeed {
                 ${replyButton}
                 <div class="sf-body">
                     ${reply}${meta}
-                    <div class="sf-text">${this.renderContent(message)}${message.edited_timestamp ? ` <span class="sf-edited">(edited)</span>` : ""}</div>
+                    ${editing ? `
+                        <div class="sf-edit" data-action="none">
+                            <textarea class="sf-edit-input" ${target} rows="1"></textarea>
+                            <div class="sf-edit-hint">Escape to <span data-action="cancel-edit">cancel</span> • Enter to <span data-action="save-edit">save</span></div>
+                        </div>`
+                        : `<div class="sf-text">${this.renderContent(message)}${message.edited_timestamp ? ` <span class="sf-edited">(edited)</span>` : ""}</div>`}
+                    ${renderStickers(message)}
                     ${renderAttachments(message, target)}
                     ${reactions}
                 </div>
@@ -1449,6 +1623,10 @@ module.exports = class ServerFeed {
             })
             .replace(/<@&(\d+)>/g, (_, id) => `@${this.getRoles()[id]?.name ?? "unknown-role"}`)
             .replace(/<#(\d+)>/g, (_, id) => `#${this.stores.ChannelStore?.getChannel?.(id)?.name ?? "channel"}`)
+            .replace(/<?https?:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(?:\d+|@me)\/(\d+)(\/\d+)?\/?>?/g, (url, id, message) => {
+                const name = this.stores.ChannelStore?.getChannel?.(id)?.name;
+                return name ? `#${name}${message ? " › 💬" : ""}` : url;
+            })
             .replace(/<a?:(\w+):\d+>/g, (_, name) => `:${name}:`)
             .replace(/<t:(-?\d+)(?::([tTdDfFR]))?>/g, (_, time, style) => formatTimestamp(Number(time) * 1000, style));
     }
@@ -1466,6 +1644,12 @@ module.exports = class ServerFeed {
         raw = raw.replace(/``([^`]+?)``|`([^`\n]+?)`/g, (_, double, single) =>
             keep(`<code class="sf-code">${escapeHtml(double ?? single)}</code>`));
         raw = raw.replace(/\[([^\]\n]+)\]\(<?(https?:\/\/[^\s)>]+)>?\)/g, (_, text, url) => link(url, escapeHtml(text)));
+        // Lien de salon ou de message copié : une pastille « #salon » comme dans Discord
+        raw = raw.replace(/<?(https?:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/(\d+|@me)\/(\d+)(?:\/(\d+))?)\/?>?/g, (_, url, guildId, channelId, messageId) => {
+            const channel = this.stores.ChannelStore?.getChannel?.(channelId);
+            if (!channel?.name) return link(url, escapeHtml(url));
+            return keep(`<span class="sf-mention" data-action="jump" data-guild="${escapeHtml(guildId)}" data-channel="${channelId}"${messageId ? ` data-message="${messageId}"` : ""}>#${escapeHtml(channel.name)}${messageId ? " › 💬" : ""}</span>`);
+        });
         raw = raw.replace(/<?(https?:\/\/[^\s<>]*[^\s<>.,:;"')\]!?])>?/g, (_, url) => link(url, escapeHtml(url)));
         raw = raw.replace(/<@!?(\d+)>/g, (_, id) => {
             const user = this.stores.UserStore?.getUser?.(id);
@@ -1479,8 +1663,11 @@ module.exports = class ServerFeed {
             const style = color ? ` style="color: ${escapeHtml(color)}; background: color-mix(in srgb, ${escapeHtml(color)} 15%, transparent)"` : "";
             return keep(`<span class="sf-mention"${style}>@${escapeHtml(role?.name ?? "unknown-role")}</span>`);
         });
-        raw = raw.replace(/<#(\d+)>/g, (_, id) =>
-            keep(`<span class="sf-mention">#${escapeHtml(this.stores.ChannelStore?.getChannel?.(id)?.name ?? "channel")}</span>`));
+        raw = raw.replace(/<#(\d+)>/g, (_, id) => {
+            const channel = this.stores.ChannelStore?.getChannel?.(id);
+            if (!channel) return keep(`<span class="sf-mention">#channel</span>`);
+            return keep(`<span class="sf-mention" data-action="jump" data-guild="${escapeHtml(channel.guild_id ?? "@me")}" data-channel="${id}">#${escapeHtml(channel.name ?? "channel")}</span>`);
+        });
         raw = raw.replace(/<(a?):(\w+):(\d+)>/g, (_, animated, name, id) =>
             keep(`<img class="sf-emoji" alt=":${escapeHtml(name)}:" src="https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=48">`));
         raw = raw.replace(/<t:(-?\d+)(?::([tTdDfFR]))?>/g, (_, time, style) =>
@@ -1490,7 +1677,6 @@ module.exports = class ServerFeed {
         // Les repères peuvent en contenir d'autres (texte d'un lien) : on remplace jusqu'à ce qu'il n'en reste plus
         for (let i = 0; i < 3 && html.includes("\u0000"); i++) html = html.replace(/\u0000(\d+)\u0000/g, (_, index) => stash[index]);
 
-        if (!html && message.sticker_items?.length) html = `<i>Sticker: ${escapeHtml(message.sticker_items[0].name)}</i>`;
         if (!html && message.embeds?.length && !message.embeds.some(embed => embed.thumbnail || embed.image)) {
             html = `<i>${escapeHtml(message.embeds[0].title ?? message.embeds[0].description ?? "Embed")}</i>`;
         }
@@ -1669,6 +1855,15 @@ function getImages(message) {
 // Une vidéo est reconnue d'un affichage à l'autre par son message et son adresse
 function videoKey(video) {
     return `${video.closest(".sf-msg")?.dataset.message}|${video.getAttribute("src")}`;
+}
+
+// Stickers en image (PNG, APNG animé ou GIF). Ceux en Lottie (les stickers officiels de Discord) sont animés
+// ensuite par le lecteur de Discord ; en attendant (ou s'il manque) on écrit leur nom
+function renderStickers(message) {
+    if (!message.sticker_items?.length || message.sfDeleted) return "";
+    return `<div class="sf-stickers">${message.sticker_items.map(sticker => sticker.format_type === 3
+        ? `<div class="sf-sticker sf-lottie" data-sticker="${escapeHtml(sticker.id)}" data-key="${escapeHtml(`${message.id}:${sticker.id}`)}" title="${escapeHtml(sticker.name)}"><i>Sticker: ${escapeHtml(sticker.name)}</i></div>`
+        : `<img class="sf-sticker" src="https://media.discordapp.net/stickers/${escapeHtml(sticker.id)}.${sticker.format_type === 4 ? "gif" : "png"}?size=160" alt="${escapeHtml(sticker.name)}" title="${escapeHtml(sticker.name)}">`).join("")}</div>`;
 }
 
 function renderAttachments(message, target) {
