@@ -9,6 +9,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | [MessageScreenshot](MessageScreenshot.plugin.js) | Right-click a message to copy it (or the last few messages) to your clipboard as a clean image. |
 | [ChannelGrid](ChannelGrid.plugin.js) | Replaces the long server channel list with a cleaner grid of channel tiles grouped by category. |
 | [ServerFeed](ServerFeed.plugin.js) | A Twitter-like feed of every unread message in the server, with context, so you can catch up without opening each channel. |
+| [EnglishFixer](EnglishFixer.plugin.js) | Press a shortcut to preview your message with its English typos and mistakes fixed, then accept or skip the corrections. |
 | [HelloWorld](HelloWorld.plugin.js) | Minimal example plugin that shows a "Hello World" toast. |
 
 ## StatusRotator
@@ -62,6 +63,16 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Click an image to open it full size, with arrows when a message has several. GIFs play like in Discord and videos have a player.
 - Role mentions show the role's name and color. Channel mentions and copied channel or message links show as **#channel** (with a 💬 for a message) and open it when clicked.
 - Muted channels (and channels in muted categories) are left out. Settings: hide messages from bots, ignore muted channels (on by default).
+
+## EnglishFixer
+
+- While writing a message, press **Ctrl+Shift+G** (configurable) or click the button on the right of the message bar to check your English with [LanguageTool](https://languagetool.org).
+- A preview shows your message with each fix highlighted. Press **Enter** to swap your text for the corrected one, or **Esc** to keep it as is.
+- Click a fix to try the other suggestions or to skip it.
+- Mentions, emojis, links and code are never touched, and names are left alone. Add your own words (slang, nicknames...) to the list of words that are never corrected.
+- Works in Discord's message box and in other plugins' text boxes, like ServerFeed's.
+- Settings: shortcut, show or hide the button, US or UK English, punctuation, capitalization and style fixes.
+- Your message is only sent to LanguageTool when you press the shortcut.
 
 ## HelloWorld
 
