@@ -53,7 +53,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - **More context** loads older messages, **Jump to first unread** opens the channel at the right place, and clicking any message jumps to it.
 - **Mark read** marks the channel as read and removes its card; **Mark all read** clears the whole feed. **Refresh** reloads everything.
 - New messages appear live without moving the cards around; a channel you already marked read comes back at the bottom.
-- Write in a channel or reply to a message (hover it → **Reply**) straight from its card, with an emoji button and @mention suggestions (members, roles, @everyone, @here). TextExpander commands still work.
+- Write in a channel or reply to a message (hover it → **Reply**) straight from its card, with an emoji button, @mention suggestions (members, roles, @everyone, @here) and #channel suggestions. TextExpander commands still work.
 - Names, avatars and name colors are the ones from the server profile, like in the chat. Click a mention to open the profile.
 - Messages that mention you (directly, through one of your roles, or with @everyone/@here) are highlighted like in Discord, and their channels come first with a red **@** badge.
 - Edit your own messages from the feed (hover → **Edit**, or press ↑ in an empty message box).

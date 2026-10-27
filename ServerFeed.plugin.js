@@ -2,7 +2,7 @@
  * @name ServerFeed
  * @author findert
  * @description Shows every unread message of the server in one feed, grouped by channel with context, like a timeline. Mark channels as read as you go.
- * @version 1.4.1
+ * @version 1.5.0
  */
 
 const DEFAULT_SETTINGS = {
@@ -136,6 +136,7 @@ const CSS = `
 .sf-suggest-item.sf-active { background: var(--background-modifier-selected, #404249); }
 .sf-suggest-item img { width: 24px; height: 24px; border-radius: 50%; flex: none; }
 .sf-suggest-item .sf-role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; margin: 0 6px; }
+.sf-suggest-item .sf-channel-icon { width: 24px; text-align: center; flex: none; font-size: 16px; color: var(--text-muted, #949ba4); }
 .sf-suggest-item small { margin-left: auto; color: var(--text-muted, #949ba4); font-size: 12px; }
 .sf-msg:hover { background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 6%, transparent); }
 .sf-msg.sf-grouped { padding-top: 0; }
@@ -1074,17 +1075,19 @@ module.exports = class ServerFeed {
 
     // --- Mentions @ ---
 
-    // Cherche un « @texte » juste avant le curseur et propose les personnes, rôles, @everyone et @here
+    // Cherche un « @texte » ou « #texte » juste avant le curseur et propose les personnes, rôles, @everyone et @here,
+    // ou les salons du serveur
     updateSuggestions(input, askDiscord) {
         const before = input.value.slice(0, input.selectionStart);
-        const match = before.match(/(^|\s)@([^\s@]{0,32})$/);
+        const match = before.match(/(^|\s)([@#])([^\s@#]{0,32})$/);
         if (!match) return this.closeSuggestions();
-        const query = match[2].toLowerCase();
+        const [, , trigger, typed] = match;
+        const query = typed.toLowerCase();
         const channelId = input.dataset.channel;
-        const items = this.findMentionables(channelId, query);
+        const items = trigger === "#" ? this.findChannels(query) : this.findMentionables(channelId, query);
 
         // Les membres pas encore chargés : Discord les cherche, la liste se met à jour quand ils arrivent
-        if (askDiscord && query) {
+        if (askDiscord && query && trigger === "@") {
             clearTimeout(this.searchTimer);
             this.searchTimer = setTimeout(() => {
                 try {
@@ -1094,9 +1097,26 @@ module.exports = class ServerFeed {
             }, 250);
         }
 
-        const sameSpot = this.suggest?.input === input && this.suggest.start === before.length - match[2].length - 1;
-        this.suggest = { input, channelId, start: before.length - match[2].length - 1, end: before.length, items, index: sameSpot ? Math.min(this.suggest.index, Math.max(0, items.length - 1)) : 0 };
+        const start = before.length - typed.length - 1;
+        const sameSpot = this.suggest?.input === input && this.suggest.start === start;
+        this.suggest = { input, channelId, trigger, start, end: before.length, items, index: sameSpot ? Math.min(this.suggest.index, Math.max(0, items.length - 1)) : 0 };
         this.drawSuggestions();
+    }
+
+    // Salons du serveur qu'on peut voir, dans l'ordre de la liste de Discord
+    findChannels(query) {
+        const lists = this.stores.GuildChannelStore?.getChannels?.(this.guildId) ?? {};
+        const { ChannelStore } = this.stores;
+        return [...(lists.SELECTABLE ?? []), ...(lists.VOCAL ?? [])]
+            .map(entry => entry.channel)
+            .filter(channel => channel?.name && (!query || channel.name.toLowerCase().includes(query)))
+            // Ceux qui commencent par le texte tapé d'abord
+            .sort((a, b) => (query && !a.name.toLowerCase().startsWith(query)) - (query && !b.name.toLowerCase().startsWith(query)))
+            .slice(0, 10)
+            .map(channel => ({
+                type: "channel", id: channel.id, label: channel.name, voice: channel.type === 2 || channel.type === 13,
+                tag: channel.parent_id ? ChannelStore?.getChannel?.(channel.parent_id)?.name : ""
+            }));
     }
 
     findMentionables(channelId, query) {
@@ -1153,12 +1173,14 @@ module.exports = class ServerFeed {
             });
             document.body.append(this.suggestEl);
         }
-        this.suggestEl.innerHTML = `<div class="sf-suggest-title">Members</div>` + suggest.items.map((item, index) => {
+        const channels = suggest.trigger === "#";
+        this.suggestEl.innerHTML = `<div class="sf-suggest-title">${channels ? "Channels" : "Members"}</div>` + suggest.items.map((item, index) => {
             const icon = item.type === "user" ? `<img src="${escapeHtml(item.avatar)}" alt="">`
+                : item.type === "channel" ? `<span class="sf-channel-icon">${item.voice ? "🔊" : "#"}</span>`
                 : `<span class="sf-role-dot" style="background: ${escapeHtml(item.color ?? "#99aab5")}"></span>`;
-            const extra = item.type === "user" ? item.tag : item.type === "role" ? "role" : "";
+            const extra = item.type === "user" || item.type === "channel" ? item.tag : item.type === "role" ? "role" : "";
             return `<div class="sf-suggest-item${index === suggest.index ? " sf-active" : ""}" data-index="${index}">
-                ${icon}<span>@${escapeHtml(item.label)}</span><small>${escapeHtml(extra ?? "")}</small></div>`;
+                ${icon}<span>${item.type === "channel" ? "" : "@"}${escapeHtml(item.label)}</span><small>${escapeHtml(extra ?? "")}</small></div>`;
         }).join("");
 
         // Juste au-dessus de la zone de texte, de la même largeur
@@ -1177,8 +1199,9 @@ module.exports = class ServerFeed {
         const { channelId } = suggest;
         // Le fil a pu être réaffiché entre-temps : on reprend la zone de texte actuelle
         const input = this.panel.querySelector(`.sf-input[data-channel="${channelId}"]`) ?? suggest.input;
-        const text = `@${item.label}`;
-        const value = item.type === "user" ? `<@${item.id}>` : item.type === "role" ? `<@&${item.id}>` : `@${item.id}`;
+        const text = `${item.type === "channel" ? "#" : "@"}${item.label}`;
+        const value = item.type === "user" ? `<@${item.id}>` : item.type === "role" ? `<@&${item.id}>`
+            : item.type === "channel" ? `<#${item.id}>` : `@${item.id}`;
         (this.mentions ??= new Map());
         const list = this.mentions.get(channelId) ?? [];
         if (!list.some(mention => mention.text === text)) list.push({ text, value });
