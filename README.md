@@ -9,6 +9,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | [MessageScreenshot](MessageScreenshot.plugin.js) | Right-click a message to copy it (or the last few messages) to your clipboard as a clean image. |
 | [ChannelGrid](ChannelGrid.plugin.js) | Replaces the long server channel list with a cleaner grid of channel tiles grouped by category. |
 | [ServerFeed](ServerFeed.plugin.js) | A Twitter-like feed of every unread message in the server, with context, so you can catch up without opening each channel. |
+| [SideChats](SideChats.plugin.js) | Open other chats (any server channel, DM or group) live next to the main view, like split screens, and talk in them. |
 | [EnglishFixer](EnglishFixer.plugin.js) | Press a shortcut to preview your message with its English typos and mistakes fixed, then accept or skip the corrections. |
 | [HelloWorld](HelloWorld.plugin.js) | Minimal example plugin that shows a "Hello World" toast. |
 
@@ -63,6 +64,16 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Click an image to open it full size, with arrows when a message has several. GIFs play like in Discord and videos have a player.
 - Role mentions show the role's name and color. Channel mentions and copied channel or message links show as **#channel** (with a 💬 for a message) and open it when clicked.
 - Muted channels (and channels in muted categories) are left out. Settings: hide messages from bots, ignore muted channels (on by default).
+
+## SideChats
+
+- Click **⧉ Chats** at the top right of the channel (next to ServerFeed's Feed button) and pick any chat: a channel of any server, a DM or a private group. It opens live on the right of the main view, which stays fully usable.
+- Open as many as you want. Each one shows the conversation in real time, with typing indicators and a "new messages" button when you've scrolled up.
+- Write, reply, edit your messages (↑ in an empty box), react, use emojis, @mentions and #channels, send GIFs (favorites, trending and search), and upload files with **+**, by pasting an image or by dropping a file on the chat. TextExpander commands and EnglishFixer still work.
+- Drag the left edge of a chat to resize it, fold it into a thin strip (with an unread counter) with **–**, open it in the main view with **↗**, or close it with **✕**.
+- Choose between **Side by side** and **Stacked** at the bottom of the chat list.
+- Right-click a channel, a group or a person → **Open in Side Chat**.
+- Your chats and their sizes are restored when Discord restarts. Settings: mark side chats as read while you watch them, show others when you're typing (never with InvisibleTyping on).
 
 ## EnglishFixer
 
