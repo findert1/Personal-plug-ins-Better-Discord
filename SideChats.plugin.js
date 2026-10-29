@@ -2,7 +2,7 @@
  * @name SideChats
  * @author findert
  * @description Open other chats (any server channel, DM or group) live next to the main view, like split screens. Resize, fold and stack them as you like.
- * @version 1.0.1
+ * @version 1.0.7
  */
 
 const DEFAULT_SETTINGS = {
@@ -37,9 +37,17 @@ const EMOJI_CATEGORIES = {
 const RECENT_LIMIT = 24;
 
 const CSS = `
-/* Les fenêtres occupent le bord droit de la zone du salon, qui garde la place pour elles */
-[data-sc-page] { padding-right: var(--sc-dock-width, 0px) !important; box-sizing: border-box !important; }
+/* Les fenêtres occupent le bord droit de la zone du salon. Le dernier élément que Discord y affiche
+   (le chat, ou le post ouvert dans un forum) leur laisse la place, et ce qui est à sa gauche se resserre */
 [data-sc-page][data-sc-static] { position: relative !important; }
+[data-sc-page] > [data-sc-last] {
+    margin-right: var(--sc-dock-width, 0px) !important; min-width: 0 !important; flex-shrink: 1 !important;
+    max-width: max(300px, calc(100% - var(--sc-dock-width, 0px) - var(--sc-before, 0px))) !important;
+}
+[data-sc-page] > [data-sc-last][data-sc-only] { flex-grow: 1 !important; }
+/* Le post ouvert d'un forum est placé par Discord contre le bord droit de la zone, en position absolue :
+   le dernier élément devient sa référence, pour qu'il se colle à gauche des fenêtres et pas dessous */
+[data-sc-page] > [data-sc-last][data-sc-relative] { position: relative !important; }
 [data-sc-page] > .sf-panel { right: var(--sc-dock-width, 0px); }
 .sc-dock {
     position: absolute; top: 0; right: 0; bottom: 0; z-index: 160; display: flex; overflow-x: auto; overflow-y: hidden;
@@ -394,6 +402,8 @@ module.exports = class SideChats {
         window.addEventListener("focus", this.onFocus);
         // Fenêtre de Discord redimensionnée : on garde de la place pour le salon principal
         this.onWindowResize = () => this.applyWidth();
+        // La place laissée au post ouvert d'un forum suit les changements de taille
+        this.resizeObserver = new ResizeObserver(() => this.fitLast());
         window.addEventListener("resize", this.onWindowResize);
 
         this.patchMenus();
@@ -412,6 +422,7 @@ module.exports = class SideChats {
         this.handlers = null;
         window.removeEventListener("focus", this.onFocus);
         window.removeEventListener("resize", this.onWindowResize);
+        this.resizeObserver?.disconnect();
         for (const unpatch of this.unpatchMenus ?? []) unpatch();
         this.unpatchMenus = [];
         for (const pane of this.panes ?? []) {
@@ -429,7 +440,7 @@ module.exports = class SideChats {
         this.button?.remove();
         this.button = null;
         this.releasePage();
-        for (const attribute of ["data-sc-page", "data-sc-static", "data-sc-host"]) {
+        for (const attribute of ["data-sc-page", "data-sc-static", "data-sc-last", "data-sc-only", "data-sc-relative", "data-sc-host"]) {
             document.querySelectorAll(`[${attribute}]`).forEach(node => node.removeAttribute(attribute));
         }
         BdApi.DOM.removeStyle(this.meta.name);
@@ -468,6 +479,7 @@ module.exports = class SideChats {
             this.releasePage();
             this.page = page;
             page.setAttribute("data-sc-page", "");
+            this.resizeObserver.observe(page);
             if (getComputedStyle(page).position === "static") page.setAttribute("data-sc-static", "");
         }
         if (this.dock.parentElement !== page) {
@@ -479,10 +491,58 @@ module.exports = class SideChats {
                 this.markSeen(pane);
             }
         }
+        this.markLast(page);
+    }
+
+    // Dans un forum, la zone du salon contient la liste des posts puis le post ouvert : seul le dernier
+    // laisse la place aux fenêtres (sinon la liste s'écrase et le post passe dessous)
+    markLast(page) {
+        const children = [...page.children].filter(child => !child.matches(".sc-dock, .sf-panel, .sc-toggle")
+            && !["absolute", "fixed"].includes(getComputedStyle(child).position) && getComputedStyle(child).display !== "none");
+        const last = children[children.length - 1] ?? null;
+        const only = children.length === 1;
+        if (this.last === last && this.lastOnly === only) return;
+        this.lastOnly = only;
+        this.unmarkLast();
+        last?.setAttribute("data-sc-last", "");
+        if (last && getComputedStyle(last).position === "static") last.setAttribute("data-sc-relative", "");
+        if (last) this.resizeObserver.observe(last);
+        this.last = last;
+        this.fitLast();
+    }
+
+    unmarkLast() {
+        if (!this.last) return;
+        this.resizeObserver.unobserve(this.last);
+        this.last.removeAttribute("data-sc-last");
+        this.last.removeAttribute("data-sc-only");
+        this.last.removeAttribute("data-sc-relative");
+        this.last.style.removeProperty("--sc-before");
+        this.last = null;
+    }
+
+    // Le dernier élément prend toute la place jusqu'aux fenêtres, moins celle des éléments à sa gauche
+    // (la liste des posts d'un forum) : le post ouvert garde sa largeur s'il tient, sinon il est réduit.
+    // Tout est relatif à la largeur de la zone, donc ça suit quand la fenêtre ou les chats changent de taille
+    fitLast() {
+        const last = this.last;
+        if (!last || !this.page) return;
+        last.toggleAttribute("data-sc-only", this.lastOnly);
+        if (this.lastOnly) {
+            last.style.removeProperty("--sc-before");
+            return;
+        }
+        // Place prise à gauche, mesurée sans limite sur le post (la liste est alors à sa largeur minimale s'il est large)
+        last.style.setProperty("--sc-before", "0px");
+        const page = this.page.getBoundingClientRect();
+        const before = Math.max(0, Math.round(last.getBoundingClientRect().left - page.left - (parseFloat(getComputedStyle(this.page).paddingLeft) || 0)));
+        last.style.setProperty("--sc-before", `${before}px`);
     }
 
     releasePage() {
+        this.unmarkLast();
         if (!this.page) return;
+        this.resizeObserver?.unobserve(this.page);
         this.page.removeAttribute("data-sc-page");
         this.page.removeAttribute("data-sc-static");
         this.page.style.removeProperty("--sc-dock-width");
@@ -495,8 +555,10 @@ module.exports = class SideChats {
         let width = stacked ? this.settings.stackWidth
             : this.panes.reduce((sum, pane) => sum + (pane.collapsed ? COLLAPSED_WIDTH : pane.width), 0);
         if (this.page) width = Math.min(width, Math.max(0, this.page.getBoundingClientRect().width - MIN_MAIN_WIDTH));
+        this.dockWidth = width;
         this.dock.style.width = `${width}px`;
         this.page?.style.setProperty("--sc-dock-width", `${width}px`);
+        this.fitLast();
     }
 
     // Le bouton va en haut à droite du salon, avec les icônes de Discord (et le bouton Feed de ServerFeed)
