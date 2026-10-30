@@ -69,7 +69,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 
 - Click **⧉ Chats** at the top right of the channel (next to ServerFeed's Feed button) and pick any chat: a channel of any server, a DM or a private group. It opens live on the right of the main view, which stays fully usable.
 - Open as many as you want. Each one shows the conversation in real time, with typing indicators and a "new messages" button when you've scrolled up.
-- Write, reply, edit your messages (↑ in an empty box), react, use emojis, @mentions and #channels, send GIFs (favorites, trending and search), and upload files with **+**, by pasting an image or by dropping a file on the chat. TextExpander commands and EnglishFixer still work.
+- Write, reply, edit your messages (↑ in an empty box), delete them (🗑, Shift+click to skip the confirmation), forward any message to another chat (↱, with an optional message), react, use emojis, @mentions and #channels, send GIFs (favorites, trending and search), and upload files with **+**, by pasting an image or by dropping a file on the chat. TextExpander commands and EnglishFixer still work.
 - Drag the left edge of a chat to resize it, fold it into a thin strip (with an unread counter) with **–**, open it in the main view with **↗**, or close it with **✕**.
 - Choose the layout at the bottom of the chat list: **Side by side**, **Stacked**, or **Grid** (columns of 2, 3 or 4 stacked chats, e.g. 4 chats in 2 rows and 2 columns).
 - Right-click a channel, a group or a person → **Open in Side Chat**.

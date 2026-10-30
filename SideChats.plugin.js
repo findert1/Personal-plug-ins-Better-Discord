@@ -2,7 +2,7 @@
  * @name SideChats
  * @author findert
  * @description Open other chats (any server channel, DM or group) live next to the main view, like split screens. Resize, fold and stack them as you like.
- * @version 1.0.9
+ * @version 1.0.14
  */
 
 const DEFAULT_SETTINGS = {
@@ -18,7 +18,10 @@ const CHAT_TYPES = new Set([0, 1, 2, 3, 5, 10, 11, 12, 13]);
 // Salons de serveur proposés dans la liste : texte, annonces, vocaux et scènes
 const GUILD_TYPES = new Set([0, 2, 5, 13]);
 const VIEW_CHANNEL = 1n << 10n;
+const MANAGE_MESSAGES = 1n << 13n;
 const PAGE_SIZE = 50;
+// Messages gardés dans une fenêtre qui suit la conversation (les plus anciens se rechargent en remontant)
+const MAX_MESSAGES = 150;
 const DEFAULT_WIDTH = 380;
 const MIN_WIDTH = 260;
 const COLLAPSED_WIDTH = 46;
@@ -140,6 +143,10 @@ const CSS = `
     border-top: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 10%, transparent);
 }
 .sc-chooser-foot .sc-spacer { flex: 1; }
+.sc-forward-note {
+    flex: 1; min-width: 0; border: none; outline: none; border-radius: 6px; padding: 7px 10px; font: inherit; font-size: 13px;
+    color: var(--text-normal, #dbdee1); background: var(--background-base-lowest, var(--background-tertiary, #1e1f22));
+}
 
 .sc-btn {
     flex: none; border: none; border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 12px; font-weight: 500;
@@ -165,6 +172,7 @@ const CSS = `
     font-size: 12px; font-weight: 600; color: var(--interactive-active, #fff);
 }
 .sc-msg-tools button:hover { background: var(--brand-500, #5865f2); }
+.sc-msg-tools button.sc-danger:hover { background: var(--status-danger, #da373c); }
 .sc-avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; cursor: pointer; }
 .sc-body { flex: 1; min-width: 0; }
 .sc-meta { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
@@ -289,7 +297,7 @@ const CSS = `
 .sc-gif-tabs { flex: none; display: flex; gap: 6px; padding: 0 8px 6px; }
 .sc-gif-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; gap: 6px; padding: 0 8px 8px; align-items: flex-start; }
 .sc-gif-column { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.sc-gif { width: 100%; border-radius: 6px; cursor: pointer; background: var(--background-base-lowest, #1e1f22); }
+.sc-gifs .sc-gif { display: block; width: 100%; height: auto; object-fit: cover; border-radius: 6px; cursor: pointer; background: var(--background-base-lowest, #1e1f22); }
 .sc-gif:hover { outline: 2px solid var(--brand-500, #5865f2); }
 
 .sc-picker {
@@ -417,18 +425,51 @@ module.exports = class SideChats {
             MESSAGE_REACTION_REMOVE: action => this.applyReaction(action, -1),
             TYPING_START: action => this.onTyping(action),
             GUILD_MEMBERS_CHUNK: action => {
-                for (const pane of this.panes) if (pane.guildId === action.guildId) this.renderList(pane);
+                const ids = new Set((action.members ?? []).map(member => member.user?.id ?? member.userId));
+                for (const pane of this.panes) {
+                    if (pane.guildId !== action.guildId) continue;
+                    if (ids.size && !pane.messages.some(message => ids.has(message.author?.id) || ids.has(message.referenced_message?.author?.id) || message.mentions?.some(user => ids.has(user.id)))) continue;
+                    pane.htmlCache = null;
+                    this.scheduleRender(pane);
+                }
                 if (this.suggest) this.updateSuggestions(this.suggest.input, false);
             },
-            CHANNEL_CREATE: () => this.panes.forEach(pane => this.renderHead(pane))
+            CHANNEL_CREATE: () => this.panes.forEach(pane => {
+                this.renderHead(pane);
+                pane.htmlCache = null;
+                this.scheduleRender(pane);
+            })
         };
         for (const [type, handler] of Object.entries(this.handlers)) this.dispatcher.subscribe(type, handler);
 
         // Revenir sur Discord : les fenêtres affichées sont considérées comme lues
-        this.onFocus = () => this.panes.forEach(pane => this.markSeen(pane));
+        this.onFocus = () => {
+            this.panes.forEach(pane => this.markSeen(pane));
+            this.updateAllMedia();
+        };
         window.addEventListener("focus", this.onFocus);
+        // Les GIF et stickers animés ne tournent que s'ils sont visibles et que Discord est au premier plan :
+        // en jeu, ils ne prennent plus de processeur ni de décodage vidéo
+        this.mediaObserver = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                entry.target.scVisible = entry.isIntersecting;
+                this.updateMedia(entry.target);
+            }
+        });
+        this.onBlur = () => this.updateAllMedia();
+        window.addEventListener("blur", this.onBlur);
+        // Discord réduit : les fenêtres ne sont redessinées qu'au retour
+        this.onVisibility = () => {
+            if (!document.hidden) this.panes.forEach(pane => pane.dirty && this.renderList(pane));
+            this.updateAllMedia();
+        };
+        document.addEventListener("visibilitychange", this.onVisibility);
         // Fenêtre de Discord redimensionnée : on garde de la place pour le salon principal
-        this.onWindowResize = () => this.applyWidth();
+        this.onWindowResize = () => {
+            this.lastChildren = null;
+            this.applyWidth();
+            this.schedule();
+        };
         // La place laissée au post ouvert d'un forum suit les changements de taille
         this.resizeObserver = new ResizeObserver(() => this.fitLast());
         window.addEventListener("resize", this.onWindowResize);
@@ -436,7 +477,10 @@ module.exports = class SideChats {
         this.patchMenus();
 
         // Le bouton est ajouté dans la barre du salon, que Discord recrée en changeant de salon
-        this.observer = new MutationObserver(() => this.schedule());
+        // Les changements dans les fenêtres (nouveaux messages, saisie) sont ignorés : ils ne changent pas la page de Discord
+        this.observer = new MutationObserver(records => {
+            if (records.some(record => !this.dock.contains(record.target) && !this.button?.contains(record.target))) this.schedule();
+        });
         this.observer.observe(document.getElementById("app-mount") ?? document.body, { childList: true, subtree: true });
         this.schedule();
     }
@@ -448,6 +492,8 @@ module.exports = class SideChats {
         for (const [type, handler] of Object.entries(this.handlers ?? {})) this.dispatcher?.unsubscribe(type, handler);
         this.handlers = null;
         window.removeEventListener("focus", this.onFocus);
+        window.removeEventListener("blur", this.onBlur);
+        document.removeEventListener("visibilitychange", this.onVisibility);
         window.removeEventListener("resize", this.onWindowResize);
         this.resizeObserver?.disconnect();
         for (const unpatch of this.unpatchMenus ?? []) unpatch();
@@ -455,7 +501,9 @@ module.exports = class SideChats {
         for (const pane of this.panes ?? []) {
             this.clearTyping(pane);
             this.clearFiles(pane);
+            this.releaseMedia(pane.el.root);
         }
+        this.mediaObserver?.disconnect();
         this.closeChooser();
         this.closePicker();
         this.closeGifs();
@@ -524,7 +572,11 @@ module.exports = class SideChats {
     // Dans un forum, la zone du salon contient la liste des posts puis le post ouvert : seul le dernier
     // laisse la place aux fenêtres (sinon la liste s'écrase et le post passe dessous)
     markLast(page) {
-        const children = [...page.children].filter(child => !child.matches(".sc-dock, .sf-panel, .sc-toggle")
+        const all = [...page.children];
+        if (this.lastChildren && this.last?.isConnected && all.length === this.lastChildren.length
+            && all.every((child, index) => child === this.lastChildren[index])) return;
+        this.lastChildren = all;
+        const children = all.filter(child => !child.matches(".sc-dock, .sf-panel, .sc-toggle")
             && !["absolute", "fixed"].includes(getComputedStyle(child).position) && getComputedStyle(child).display !== "none");
         const last = children[children.length - 1] ?? null;
         const only = children.length === 1;
@@ -539,6 +591,7 @@ module.exports = class SideChats {
     }
 
     unmarkLast() {
+        this.lastChildren = null;
         if (!this.last) return;
         this.resizeObserver.unobserve(this.last);
         this.last.removeAttribute("data-sc-last");
@@ -756,6 +809,7 @@ module.exports = class SideChats {
         this.clearFiles(pane);
         if (this.suggest?.pane === pane) this.closeSuggestions();
         if (this.editing?.channelId === channelId) this.editing = null;
+        this.releaseMedia(pane.el.root);
         pane.el.root.remove();
         this.panes.splice(this.panes.indexOf(pane), 1);
         this.layout();
@@ -875,11 +929,17 @@ module.exports = class SideChats {
 
     // --- Choix d'une conversation ---
 
-    openChooser(button) {
-        if (this.chooser) return this.closeChooser();
+    // Liste des conversations : pour en ouvrir une dans une fenêtre, ou pour y transférer un message (`forward`)
+    openChooser(button, forward = null) {
+        if (this.chooser) {
+            const same = this.chooser.forward?.messageId === forward?.messageId;
+            this.closeChooser();
+            if (same) return;
+        }
         const chooser = el("div", "sc-chooser");
         const search = el("input", "sc-chooser-search");
-        search.placeholder = "Search a channel, a DM or a group";
+        search.placeholder = forward ? "Forward to a channel, a DM or a group" : "Search a channel, a DM or a group";
+        const note = forward ? el("input", "sc-forward-note") : null;
         const list = el("div", "sc-chooser-list");
         const foot = el("div", "sc-chooser-foot");
         chooser.append(search, list, foot);
@@ -895,7 +955,7 @@ module.exports = class SideChats {
                 ${section.items.map(item => `
                     <div class="sc-choice${index === state.index ? " sc-active" : ""}" data-index="${index++}">
                         ${iconHtml(item.icon, item.label)}<span>${escapeHtml(item.label)}</span>
-                        <small${item.open ? ` class="sc-open-tag"` : ""}>${escapeHtml(item.open ? "open" : item.sub)}</small>
+                        <small${item.open && !forward ? ` class="sc-open-tag"` : ""}>${escapeHtml(item.open && !forward ? "open" : item.sub)}</small>
                     </div>`).join("")}`).join("")
                 : `<div class="sc-chooser-empty">${search.value.trim() ? "Nothing found" : "Type to search every server, DM and group"}</div>`;
             list.querySelector(".sc-active")?.scrollIntoView({ block: "nearest" });
@@ -904,13 +964,14 @@ module.exports = class SideChats {
             const item = state.items[index];
             if (!item) return;
             this.closeChooser();
-            this.openChat(item.channelId);
+            if (forward) this.forwardMessage(forward, item, note.value.trim());
+            else this.openChat(item.channelId);
         };
         search.addEventListener("input", () => {
             state.index = 0;
             draw();
         });
-        search.addEventListener("keydown", e => {
+        const onKey = e => {
             e.stopPropagation();
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
@@ -924,7 +985,9 @@ module.exports = class SideChats {
                 e.preventDefault();
                 this.closeChooser();
             }
-        });
+        };
+        search.addEventListener("keydown", onKey);
+        note?.addEventListener("keydown", onKey);
         list.addEventListener("click", e => {
             const item = e.target.closest("[data-index]");
             if (item) choose(Number(item.dataset.index));
@@ -933,6 +996,11 @@ module.exports = class SideChats {
         // Bas de la liste : disposition des fenêtres et fermeture de toutes
         const drawFoot = () => {
             foot.replaceChildren();
+            // Transfert : un message à ajouter (facultatif), comme dans Discord
+            if (forward) {
+                note.placeholder = "Add an optional message...";
+                return foot.append(note);
+            }
             foot.append(el("span", "", "Layout"));
             const option = (text, selected, apply) => {
                 const button = el("button", `sc-btn${selected ? " sc-on" : ""}`, text);
@@ -969,14 +1037,15 @@ module.exports = class SideChats {
         document.body.append(chooser);
         const rect = button.getBoundingClientRect();
         chooser.style.left = `${Math.min(Math.max(8, rect.right - 360), window.innerWidth - 368)}px`;
-        chooser.style.top = `${rect.bottom + 6}px`;
+        // Depuis un message en bas d'un chat : la liste remonte pour rester dans l'écran
+        chooser.style.top = `${Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - chooser.offsetHeight - 8))}px`;
         search.focus();
 
         const onOutside = e => {
             if (!chooser.contains(e.target) && !button.contains(e.target)) this.closeChooser();
         };
         setTimeout(() => document.addEventListener("mousedown", onOutside, true));
-        this.chooser = { element: chooser, onOutside };
+        this.chooser = { element: chooser, onOutside, forward };
     }
 
     closeChooser() {
@@ -1141,6 +1210,11 @@ module.exports = class SideChats {
         const pane = this.getPane(channelId ?? message.channel_id);
         if (!pane?.loaded || pane.messages.some(existing => existing.id === message.id)) return;
         pane.messages.push(message);
+        // Salon très actif (bot, live feed) : on ne garde que les derniers, sinon la fenêtre grossit sans fin
+        if (pane.stick && pane.messages.length > MAX_MESSAGES) {
+            pane.messages.splice(0, pane.messages.length - MAX_MESSAGES);
+            pane.hasMore = true;
+        }
         if (pane.typing.has(message.author?.id)) {
             clearTimeout(pane.typing.get(message.author.id));
             pane.typing.delete(message.author.id);
@@ -1159,6 +1233,7 @@ module.exports = class SideChats {
         const existing = pane?.messages.find(item => item.id === message.id);
         if (!existing) return;
         Object.assign(existing, message);
+        bump(existing);
         this.renderList(pane);
     }
 
@@ -1167,7 +1242,40 @@ module.exports = class SideChats {
         const existing = pane?.messages.find(item => item.id === id);
         if (!existing) return;
         existing.scDeleted = true;
+        bump(existing);
         this.renderList(pane);
+    }
+
+    // Ses propres messages, et ceux des autres avec la permission de gérer les messages du salon
+    canDelete(message, own) {
+        if (message.type && ![0, 19, 20, 23].includes(message.type)) return false;
+        if (own) return true;
+        const channel = this.stores.ChannelStore?.getChannel?.(message.channel_id);
+        return Boolean(channel?.guild_id && this.stores.PermissionStore?.can?.(MANAGE_MESSAGES, channel));
+    }
+
+    // Comme Discord : une confirmation, sauf avec Maj enfoncée
+    removeMessage(channelId, messageId, skipConfirm) {
+        if (!this.findMessage(channelId, messageId)) return;
+        const run = async () => {
+            try {
+                await this.http.del({ url: `/channels/${channelId}/messages/${messageId}` });
+                // Supprimé par soi : il disparaît, au lieu d'être barré comme ceux supprimés par les autres
+                const pane = this.getPane(channelId);
+                const index = pane?.messages.findIndex(item => item.id === messageId) ?? -1;
+                if (index >= 0) {
+                    pane.messages.splice(index, 1);
+                    this.renderList(pane);
+                }
+            } catch (error) {
+                console.error(`[${this.meta.name}] couldn't delete the message`, error);
+                BdApi.UI.showToast("SideChats: couldn't delete this message", { type: "error" });
+            }
+        };
+        if (skipConfirm) return run();
+        BdApi.UI.showConfirmationModal("Delete Message", "Are you sure you want to delete this message?", {
+            confirmText: "Delete", cancelText: "Cancel", danger: true, onConfirm: run
+        });
     }
 
     findMessage(channelId, messageId) {
@@ -1273,6 +1381,8 @@ module.exports = class SideChats {
         else if (name === "reply") this.startReply(channel, message);
         else if (name === "cancel-reply") this.cancelReply(channel);
         else if (name === "edit") this.startEdit(channel, message);
+        else if (name === "delete") this.removeMessage(channel, message, e.shiftKey);
+        else if (name === "forward") this.openChooser(action, { channelId: channel, messageId: message });
         else if (name === "cancel-edit") this.cancelEdit();
         else if (name === "save-edit") this.saveEdit();
         else if (name === "send") this.send(channel);
@@ -1448,6 +1558,37 @@ module.exports = class SideChats {
         } finally {
             pane.sending = false;
             pane.el.files.classList.remove("sc-uploading");
+        }
+    }
+
+    // Messages normaux (avec du contenu) seulement, comme dans Discord
+    canForward(message) {
+        return !message.scDeleted && (!message.type || [19, 20, 23].includes(message.type))
+            && Boolean(message.content || message.attachments?.length || message.embeds?.length || message.sticker_items?.length || message.message_snapshots?.length);
+    }
+
+    // Transfert : un message qui fait référence à l'original, puis le message ajouté s'il y en a un
+    async forwardMessage({ channelId, messageId }, target, note) {
+        const source = this.stores.ChannelStore?.getChannel?.(channelId);
+        try {
+            await this.http.post({
+                url: `/channels/${target.channelId}/messages`,
+                body: {
+                    nonce: String((BigInt(Date.now()) - DISCORD_EPOCH) << 22n),
+                    message_reference: { type: 1, message_id: messageId, channel_id: channelId, ...(source?.guild_id ? { guild_id: source.guild_id } : {}) }
+                }
+            });
+            if (note) {
+                const message = { content: note };
+                try {
+                    if (BdApi.Plugins.isEnabled("TextExpander")) BdApi.Plugins.get("TextExpander")?.instance?.expandMessage?.(message);
+                } catch {}
+                await this.postMessage(target.channelId, { content: message.content });
+            }
+            BdApi.UI.showToast(`Forwarded to ${target.label}`, { type: "success" });
+        } catch (error) {
+            console.error(`[${this.meta.name}] couldn't forward the message`, error);
+            BdApi.UI.showToast("SideChats: couldn't forward this message", { type: "error" });
         }
     }
 
@@ -1754,6 +1895,7 @@ module.exports = class SideChats {
         reaction.count = Math.max(0, reaction.count + delta);
         if (mine) reaction.me = delta > 0;
         if (!reaction.count) reactions.splice(reactions.indexOf(reaction), 1);
+        bump(message);
         this.renderList(this.getPane(channelId));
     }
 
@@ -2163,56 +2305,113 @@ module.exports = class SideChats {
     // keepBottom : des messages ont été ajoutés au-dessus, on garde la même distance avec le bas
     renderList(pane, keepBottom = false) {
         if (!pane) return;
+        // Discord réduit : rien à voir, on redessine en revenant
+        if (document.hidden) {
+            pane.dirty = true;
+            return;
+        }
+        pane.dirty = false;
         const channel = this.stores.ChannelStore?.getChannel?.(pane.channelId);
-        let html;
-        if (pane.error) html = `<div class="sc-info sc-error">${escapeHtml(pane.error)}</div>`;
-        else if (!pane.loaded) html = `<div class="sc-info">Loading…</div>`;
+        const rows = [];
+        if (pane.error) rows.push({ key: "info", html: `<div class="sc-info sc-error">${escapeHtml(pane.error)}</div>` });
+        else if (!pane.loaded) rows.push({ key: "info", html: `<div class="sc-info">Loading…</div>` });
         else {
-            const rows = [pane.hasMore
+            rows.push({ key: "info", html: pane.hasMore
                 ? `<div class="sc-info">Loading older messages…</div>`
-                : `<div class="sc-info">This is the beginning of ${escapeHtml(this.describe(pane.channelId).name)}</div>`];
+                : `<div class="sc-info">This is the beginning of ${escapeHtml(this.describe(pane.channelId).name)}</div>` });
             let previous = null;
+            const htmlCache = new Map();
             for (const message of pane.messages) {
                 // Changement de jour : une ligne avec la date, comme dans Discord
                 const day = new Date(idToTime(message.id)).toDateString();
                 if (!previous || day !== new Date(idToTime(previous.id)).toDateString()) {
-                    rows.push(`<div class="sc-separator">${escapeHtml(new Date(idToTime(message.id)).toLocaleDateString(undefined, { dateStyle: "long" }))}</div>`);
+                    rows.push({ key: `day:${day}`, html: `<div class="sc-separator">${escapeHtml(new Date(idToTime(message.id)).toLocaleDateString(undefined, { dateStyle: "long" }))}</div>` });
                     previous = null;
                 }
-                rows.push(this.renderMessage(pane, message, previous));
+                // Le HTML d'un message est gardé tant que rien ne change (contenu, réactions, groupement, réponse, édition)
+                const version = `${message.scVersion ?? 0}|${previous?.id ?? ""}|${pane.replyTo === message.id}|${this.editing?.messageId === message.id}`;
+                const cached = pane.htmlCache?.get(message.id);
+                const messageHtml = cached?.version === version ? cached.html : this.renderMessage(pane, message, previous);
+                // Les dates relatives (« il y a 5 minutes ») changent seules : jamais gardées
+                if (!String(message.content ?? "").includes("<t:")) htmlCache.set(message.id, { version, html: messageHtml });
+                rows.push({ key: message.id, html: messageHtml });
                 previous = message;
             }
-            html = rows.join("");
+            pane.htmlCache = htmlCache;
         }
+        const html = rows.map(row => row.html).join("");
         if (html === pane.lastHtml) return;
 
         const { scroll, list } = pane.el;
         const fromBottom = scroll.scrollHeight - scroll.scrollTop;
         const focused = document.activeElement?.closest?.(".sc-edit-input");
         const focus = focused && list.contains(focused) ? { start: focused.selectionStart, end: focused.selectionEnd } : null;
-        // Les vidéos, GIF et stickers en cours sont gardés tels quels, pour ne pas les relancer à chaque message
+
+        // Seules les lignes qui ont changé sont recréées : les autres (et leurs images) restent en place
+        const cache = pane.rows ?? new Map();
+        const next = new Map();
+        const created = [];
+        const nodes = rows.map(row => {
+            const old = cache.get(row.key);
+            if (old && old.html === row.html) {
+                next.set(row.key, old);
+                return old.node;
+            }
+            const template = document.createElement("template");
+            template.innerHTML = row.html.trim();
+            const node = template.content.firstElementChild;
+            next.set(row.key, { html: row.html, node });
+            created.push(node);
+            return node;
+        });
+        const kept = new Set(nodes);
+        const dropped = [...list.children].filter(node => !kept.has(node));
+
+        // Les vidéos, GIF et stickers en cours sont repris dans la nouvelle ligne, pour ne pas les relancer
         const videos = new Map();
-        for (const video of list.querySelectorAll(".sc-attachments video")) videos.set(videoKey(video), video);
         const stickers = new Map();
-        for (const sticker of list.querySelectorAll(".sc-lottie.sc-ready")) stickers.set(sticker.dataset.key, sticker);
+        for (const node of dropped) {
+            for (const video of node.querySelectorAll("video")) videos.set(videoKey(video), video);
+            for (const sticker of node.querySelectorAll(".sc-lottie.sc-ready")) stickers.set(sticker.dataset.key, sticker);
+        }
+        const pending = [];
+        for (const node of created) {
+            for (const video of node.querySelectorAll("video")) {
+                const old = videos.get(videoKey(video));
+                if (old) {
+                    video.replaceWith(old);
+                    videos.delete(videoKey(old));
+                } else if (video.loop) this.mediaObserver.observe(video);
+            }
+            for (const sticker of node.querySelectorAll(".sc-lottie")) {
+                const old = stickers.get(sticker.dataset.key);
+                if (old) {
+                    sticker.replaceWith(old);
+                    stickers.delete(sticker.dataset.key);
+                } else pending.push(sticker);
+            }
+        }
 
         pane.restoring = true;
-        list.innerHTML = html;
+        let cursor = list.firstChild;
+        for (const node of nodes) {
+            if (node === cursor) cursor = cursor.nextSibling;
+            else list.insertBefore(node, cursor);
+        }
+        while (cursor) {
+            const following = cursor.nextSibling;
+            cursor.remove();
+            cursor = following;
+        }
+        for (const node of dropped) this.releaseMedia(node);
+        for (const sticker of pending) this.playSticker(sticker);
+        pane.rows = next;
         pane.lastHtml = html;
-        for (const video of list.querySelectorAll(".sc-attachments video")) {
-            const old = videos.get(videoKey(video));
-            if (old) video.replaceWith(old);
-        }
-        for (const sticker of list.querySelectorAll(".sc-lottie")) {
-            const old = stickers.get(sticker.dataset.key);
-            if (old) sticker.replaceWith(old);
-            else this.playSticker(sticker);
-        }
         const edit = list.querySelector(".sc-edit-input");
         if (edit) {
-            edit.value = this.editing?.draft ?? "";
+            if (edit.value !== (this.editing?.draft ?? "")) edit.value = this.editing?.draft ?? "";
             autoSize(edit);
-            if (focus) {
+            if (focus && document.activeElement !== edit) {
                 edit.focus();
                 edit.setSelectionRange(focus.start, focus.end);
             }
@@ -2226,6 +2425,40 @@ module.exports = class SideChats {
         pane.el.newbar.hidden = pane.stick || !pane.unseen;
         pane.el.newbar.textContent = `${pane.unseen} new message${pane.unseen === 1 ? "" : "s"} ↓`;
         if (!channel && pane.loaded) this.renderHead(pane);
+    }
+
+    // Plusieurs mises à jour d'affilée (membres reçus par paquets) : un seul rendu
+    scheduleRender(pane) {
+        if (pane.renderFrame) return;
+        pane.renderFrame = requestAnimationFrame(() => {
+            pane.renderFrame = 0;
+            if (this.panes.includes(pane)) this.renderList(pane);
+        });
+    }
+
+    // Un GIF (vidéo en boucle) ou un sticker animé ne tourne que visible, avec Discord au premier plan
+    updateMedia(node) {
+        const play = Boolean(node.scVisible) && document.hasFocus() && !document.hidden;
+        if (node.tagName === "VIDEO") {
+            if (play && node.paused) node.play().catch(() => {});
+            else if (!play && !node.paused) node.pause();
+        } else if (node.scAnimation) {
+            if (play) node.scAnimation.play();
+            else node.scAnimation.pause();
+        }
+    }
+
+    updateAllMedia() {
+        this.dock?.querySelectorAll("video[loop], .sc-lottie.sc-ready").forEach(node => this.updateMedia(node));
+    }
+
+    // Lignes retirées : on arrête de les surveiller et on libère leurs animations
+    releaseMedia(root) {
+        for (const node of root.querySelectorAll("video[loop], .sc-lottie")) {
+            this.mediaObserver?.unobserve(node);
+            node.scAnimation?.destroy();
+            node.scAnimation = null;
+        }
     }
 
     renderMessage(pane, message, previous) {
@@ -2249,6 +2482,8 @@ module.exports = class SideChats {
                 <button data-action="add-reaction" ${target} title="Add Reaction">☺ +</button>
                 ${own && !message.webhook_id ? `<button data-action="edit" ${target}>✎</button>` : ""}
                 <button data-action="reply" ${target} title="Reply">↩</button>
+                ${this.canForward(message) ? `<button data-action="forward" ${target} title="Forward">↱</button>` : ""}
+                ${this.canDelete(message, own) ? `<button class="sc-danger" data-action="delete" ${target} title="Delete (Shift+click: no confirmation)">🗑</button>` : ""}
             </div>`;
         const reactions = message.reactions?.length && !message.scDeleted ? `
             <div class="sc-reactions">
@@ -2311,7 +2546,7 @@ module.exports = class SideChats {
             const item = images.find(entry => entry.embed === embed && entry.kind === kind);
             if (!item) return "";
             return item.video
-                ? `<video class="${className}" src="${escapeHtml(item.preview)}" autoplay loop muted playsinline data-action="image" ${target} data-index="${item.index}"></video>`
+                ? `<video class="${className}" src="${escapeHtml(item.preview)}" loop muted playsinline data-action="image" ${target} data-index="${item.index}"></video>`
                 : `<img class="${className}" src="${escapeHtml(item.preview)}" alt="" data-action="image" ${target} data-index="${item.index}">`;
         };
         const linked = (url, html) => url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${html}</a>` : html;
@@ -2361,7 +2596,8 @@ module.exports = class SideChats {
         node.textContent = "";
         node.classList.add("sc-ready");
         try {
-            this.lottie.loadAnimation({ container: node, renderer: "svg", loop: true, autoplay: true, animationData: data });
+            node.scAnimation = this.lottie.loadAnimation({ container: node, renderer: "svg", loop: true, autoplay: false, animationData: data });
+            this.mediaObserver.observe(node);
         } catch (error) {
             console.error(`[${this.meta.name}] couldn't play the sticker`, error);
         }
@@ -2730,7 +2966,7 @@ function renderStickers(message, deleted = message.scDeleted) {
 // Images jointes (fichiers et aperçus de liens) en miniatures, vidéos avec un lecteur, autres fichiers en lien
 function renderAttachments(message, images, target) {
     const items = images.map(image => image.video
-        ? `<video src="${escapeHtml(image.preview)}" autoplay loop muted playsinline data-action="image" ${target} data-index="${image.index}"></video>`
+        ? `<video src="${escapeHtml(image.preview)}" loop muted playsinline data-action="image" ${target} data-index="${image.index}"></video>`
         : `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${image.index}">`);
     for (const file of message.attachments ?? []) {
         if (isImageFile(file)) continue;
@@ -2739,6 +2975,11 @@ function renderAttachments(message, images, target) {
         } else items.push(`<a class="sc-file" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">📎 ${escapeHtml(file.filename)}</a>`);
     }
     return items.length ? `<div class="sc-attachments">${items.join("")}</div>` : "";
+}
+
+// Un message a changé : son HTML doit être refait
+function bump(message) {
+    message.scVersion = (message.scVersion ?? 0) + 1;
 }
 
 // Largeur d'une colonne de la grille : celle de ses fenêtres (elles l'ont toutes après un redimensionnement)
