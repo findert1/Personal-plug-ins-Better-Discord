@@ -2,12 +2,13 @@
  * @name SideChats
  * @author findert
  * @description Open other chats (any server channel, DM or group) live next to the main view, like split screens. Resize, fold and stack them as you like.
- * @version 1.0.8
+ * @version 1.0.9
  */
 
 const DEFAULT_SETTINGS = {
     layout: "columns",
     stackWidth: 420,
+    rows: 2,
     markRead: true,
     sendTyping: true
 };
@@ -59,8 +60,9 @@ const CSS = `
     background: var(--background-base-lower, var(--background-primary, #313338));
     border-left: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 14%, transparent);
 }
-.sc-stacked .sc-pane { height: auto; flex: 1 1 0; width: auto !important; border-top: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 14%, transparent); }
-.sc-stacked .sc-pane.sc-collapsed { flex: none; }
+.sc-column { position: relative; flex: none; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.sc-stacked .sc-pane, .sc-column .sc-pane { height: auto; flex: 1 1 0; width: auto !important; border-top: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 14%, transparent); }
+.sc-stacked .sc-pane.sc-collapsed, .sc-column .sc-pane.sc-collapsed { flex: none; }
 .sc-pane.sc-flash { animation: sc-flash .7s; }
 @keyframes sc-flash { 0%, 100% { box-shadow: none; } 40% { box-shadow: inset 0 0 0 2px var(--brand-500, #5865f2); } }
 .sc-resize { position: absolute; top: 0; bottom: 0; left: -3px; width: 6px; z-index: 5; cursor: col-resize; }
@@ -75,10 +77,10 @@ const CSS = `
 .sc-collapsed .sc-strip {
     flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; cursor: pointer; min-width: 0; overflow: hidden;
 }
-.sc-stacked .sc-collapsed .sc-strip { flex-direction: row; padding: 6px 10px; }
+.sc-stacked .sc-collapsed .sc-strip, .sc-column .sc-collapsed .sc-strip { flex-direction: row; padding: 6px 10px; }
 .sc-strip:hover { background: var(--background-modifier-hover, #393c41); }
 .sc-strip-name { writing-mode: vertical-rl; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-height: 100%; }
-.sc-stacked .sc-strip-name { writing-mode: horizontal-tb; }
+.sc-stacked .sc-strip-name, .sc-column .sc-strip-name { writing-mode: horizontal-tb; }
 
 .sc-head {
     flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; min-width: 0;
@@ -134,7 +136,7 @@ const CSS = `
 .sc-choice .sc-open-tag { color: var(--brand-360, #949cf7); font-weight: 600; }
 .sc-chooser-empty { color: var(--text-muted, #949ba4); padding: 14px 8px; font-size: 13px; }
 .sc-chooser-foot {
-    flex: none; display: flex; align-items: center; gap: 6px; padding: 8px; font-size: 12px; color: var(--text-muted, #949ba4);
+    flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; font-size: 12px; color: var(--text-muted, #949ba4);
     border-top: 1px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 10%, transparent);
 }
 .sc-chooser-foot .sc-spacer { flex: 1; }
@@ -385,6 +387,7 @@ module.exports = class SideChats {
         this.dockResize = el("div", "sc-dock-resize");
         this.dockResize.dataset.resize = "dock";
         this.dock.append(this.dockResize);
+        this.columns = [];
         this.dock.addEventListener("click", e => this.onClick(e));
         this.dock.addEventListener("input", e => this.onInput(e));
         this.dock.addEventListener("keydown", e => this.onKeyDown(e));
@@ -575,8 +578,9 @@ module.exports = class SideChats {
 
     // Largeur totale des fenêtres, en laissant toujours de la place au salon principal
     applyWidth() {
-        const stacked = this.settings.layout === "stacked";
-        let width = stacked ? this.settings.stackWidth
+        const mode = this.settings.layout;
+        let width = mode === "stacked" ? this.settings.stackWidth
+            : mode === "grid" ? this.gridColumns().reduce((sum, panes) => sum + columnWidth(panes), 0)
             : this.panes.reduce((sum, pane) => sum + (pane.collapsed ? COLLAPSED_WIDTH : pane.width), 0);
         if (this.page) width = Math.min(width, Math.max(0, this.page.getBoundingClientRect().width - MIN_MAIN_WIDTH));
         this.dockWidth = width;
@@ -774,18 +778,53 @@ module.exports = class SideChats {
         }
     }
 
-    // Dispose les fenêtres côte à côte (chacune sa largeur) ou empilées (une largeur pour toutes)
+    // Dispose les fenêtres côte à côte (chacune sa largeur), empilées (une largeur pour toutes)
+    // ou en grille : des colonnes de quelques fenêtres empilées
     layout() {
-        const stacked = this.settings.layout === "stacked";
-        this.dock.classList.toggle("sc-stacked", stacked);
+        const mode = this.settings.layout;
+        this.dock.classList.toggle("sc-stacked", mode === "stacked");
         this.applyWidth();
         for (const pane of this.panes) {
             const { root } = pane.el;
             root.classList.toggle("sc-collapsed", pane.collapsed);
-            root.style.width = stacked ? "" : `${pane.collapsed ? COLLAPSED_WIDTH : pane.width}px`;
-            if (root.parentElement !== this.dock) this.dock.append(root);
+            root.style.width = mode === "columns" ? `${pane.collapsed ? COLLAPSED_WIDTH : pane.width}px` : "";
+        }
+
+        // Déplacer une fenêtre dans la page la remet en haut : on garde où chacune en était
+        const scrolls = new Map(this.panes.map(pane => [pane, pane.el.scroll.scrollTop]));
+        let moved = false;
+        const place = (container, nodes) => {
+            const current = [...container.children].filter(child => child.matches(".sc-pane, .sc-column"));
+            if (current.length === nodes.length && current.every((node, index) => node === nodes[index])) return;
+            container.append(...nodes);
+            moved = true;
+        };
+        if (mode === "grid") {
+            const columns = this.gridColumns().map((panes, index) => {
+                const column = this.columns[index] ??= el("div", "sc-column");
+                column.style.width = `${columnWidth(panes)}px`;
+                place(column, panes.map(pane => pane.el.root));
+                return column;
+            });
+            place(this.dock, columns);
+        } else place(this.dock, this.panes.map(pane => pane.el.root));
+        // Colonnes qui ne servent plus (moins de fenêtres, ou autre disposition)
+        for (const column of this.columns.splice(mode === "grid" ? this.gridColumns().length : 0)) column.remove();
+        if (moved) {
+            for (const [pane, top] of scrolls) {
+                if (pane.stick) scrollToBottom(pane);
+                else pane.el.scroll.scrollTop = top;
+            }
         }
         if (this.button) this.button.textContent = this.panes.length ? `⧉ Chats · ${this.panes.length}` : "⧉ Chats";
+    }
+
+    // Grille : les fenêtres remplissent les colonnes de haut en bas, `rows` par colonne
+    gridColumns() {
+        const rows = Math.max(1, Number(this.settings.rows) || 2);
+        const columns = [];
+        for (let i = 0; i < this.panes.length; i += rows) columns.push(this.panes.slice(i, i + rows));
+        return columns;
     }
 
     save() {
@@ -813,7 +852,9 @@ module.exports = class SideChats {
         // Les fenêtres sont à droite : tirer vers la gauche les agrandit
         const onMove = event => {
             const width = Math.round(Math.min(Math.max(MIN_WIDTH, startWidth + startX - event.clientX), window.innerWidth * .75));
-            if (pane) {
+            if (pane && this.settings.layout === "grid") {
+                for (const other of this.gridColumns().find(panes => panes.includes(pane)) ?? [pane]) other.width = width;
+            } else if (pane) {
                 pane.width = width;
                 if (pane.collapsed) pane.collapsed = false;
             } else this.settings.stackWidth = width;
@@ -893,15 +934,23 @@ module.exports = class SideChats {
         const drawFoot = () => {
             foot.replaceChildren();
             foot.append(el("span", "", "Layout"));
-            for (const [value, text] of [["columns", "Side by side"], ["stacked", "Stacked"]]) {
-                const option = el("button", `sc-btn${this.settings.layout === value ? " sc-on" : ""}`, text);
-                option.addEventListener("click", () => {
-                    this.settings.layout = value;
+            const option = (text, selected, apply) => {
+                const button = el("button", `sc-btn${selected ? " sc-on" : ""}`, text);
+                button.addEventListener("click", () => {
+                    apply();
                     this.saveSettings();
                     this.layout();
                     drawFoot();
                 });
-                foot.append(option);
+                foot.append(button);
+            };
+            for (const [value, text] of [["columns", "Side by side"], ["stacked", "Stacked"], ["grid", "Grid"]]) {
+                option(text, this.settings.layout === value, () => this.settings.layout = value);
+            }
+            // En grille : nombre de fenêtres empilées par colonne
+            if (this.settings.layout === "grid") {
+                foot.append(el("span", "", "Rows"));
+                for (const rows of [2, 3, 4]) option(String(rows), this.settings.rows === rows, () => this.settings.rows = rows);
             }
             foot.append(el("span", "sc-spacer"));
             if (this.panes.length) {
@@ -2690,6 +2739,11 @@ function renderAttachments(message, images, target) {
         } else items.push(`<a class="sc-file" href="${escapeHtml(file.url)}" target="_blank" rel="noreferrer">📎 ${escapeHtml(file.filename)}</a>`);
     }
     return items.length ? `<div class="sc-attachments">${items.join("")}</div>` : "";
+}
+
+// Largeur d'une colonne de la grille : celle de ses fenêtres (elles l'ont toutes après un redimensionnement)
+function columnWidth(panes) {
+    return Math.max(...panes.map(pane => pane.width));
 }
 
 // Image ronde d'une conversation, ou ses initiales s'il n'y en a pas
