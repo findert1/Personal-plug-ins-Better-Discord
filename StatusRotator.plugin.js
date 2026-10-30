@@ -1,8 +1,8 @@
 /**
  * @name StatusRotator
  * @author findert
- * @description Automatically rotates between multiple custom statuses at a set interval.
- * @version 1.0.1
+ * @description Automatically rotates between multiple custom statuses at a set interval. Custom server emojis can be used with Nitro.
+ * @version 1.1.0
  */
 
 // Minimum entre deux changements, pour ne pas se faire rate-limit par Discord
@@ -48,8 +48,10 @@ const CSS = `
     background: var(--background-tertiary, #1e1f22);
     border: 1px solid var(--background-modifier-accent, #4e5058);
 }
-.sr-panel button.sr-emoji-btn.sr-empty { opacity: 0.4; }
+.sr-panel button.sr-emoji-btn.sr-empty, .sr-panel button.sr-emoji-btn.sr-locked { opacity: 0.4; }
 .sr-emoji-img { width: 22px; height: 22px; object-fit: contain; }
+.sr-guild-icon { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; }
+.sr-guild-letters { width: 22px; font-size: 10px; font-weight: 600; overflow: hidden; white-space: nowrap; }
 .sr-picker {
     display: flex; flex-direction: column; gap: 8px; padding: 8px;
     background: var(--background-secondary, #2b2d31);
@@ -174,9 +176,20 @@ module.exports = class StatusRotator {
     // --- Statut Discord ---
 
     setStatus({ text, emoji, presence }) {
+        // Emoji de serveur : seulement si Discord l'autorise (Nitro), sinon le statut part sans emoji
+        let emojiId = "0", emojiName = "";
+        if (isCustomEmoji(emoji)) {
+            if (canUseCustomEmoji(emoji)) {
+                emojiId = emoji.id;
+                emojiName = emoji.name;
+            }
+        } else if (emoji) {
+            emojiName = emoji;
+        }
+
         this.settingsActions.updateAsync("status", s => {
-            s.customStatus = (text || emoji)
-                ? { text: text ?? "", emojiId: "0", emojiName: emoji ?? "", expiresAtMs: "0" }
+            s.customStatus = (text || emojiName)
+                ? { text: text ?? "", emojiId, emojiName, expiresAtMs: "0" }
                 : undefined;
             if (presence) s.status = { value: presence };
         }, 0);
@@ -225,13 +238,15 @@ module.exports = class StatusRotator {
         if (wasOpen) return;
 
         const data = loadEmojiData();
+        // Emojis de tes serveurs en premier (comme le sélecteur de Discord), seulement avec Nitro
+        const categories = [...loadCustomEmojiCategories(), ...data.categories];
         const element = el("div", "sr-picker");
         const close = () => {
             element.remove();
             this.picker = null;
         };
-        const select = char => {
-            onSelect(char);
+        const select = value => {
+            onSelect(value);
             close();
         };
 
@@ -240,8 +255,8 @@ module.exports = class StatusRotator {
             grid.replaceChildren(...list.map(emoji => {
                 const button = el("button");
                 button.title = emoji.name ? `:${emoji.name}:` : emoji.char;
-                button.append(renderEmoji(emoji.char));
-                button.addEventListener("click", () => select(emoji.char));
+                button.append(renderEmoji(emoji.value));
+                button.addEventListener("click", () => select(emoji.value));
                 return button;
             }));
             if (!list.length) grid.append(el("div", "sr-picker-empty", "No emoji found"));
@@ -253,10 +268,10 @@ module.exports = class StatusRotator {
             tab.classList.add("sr-active");
             showEmojis(category.emojis);
         };
-        for (const category of data.categories) {
+        for (const category of categories) {
             const tab = el("button");
-            tab.title = category.id;
-            tab.append(renderEmoji(category.icon));
+            tab.title = category.title ?? category.id;
+            tab.append(renderIcon(category.icon));
             tab.addEventListener("click", () => {
                 if (search) search.value = "";
                 selectCategory(category, tab);
@@ -270,9 +285,9 @@ module.exports = class StatusRotator {
             search.placeholder = "Search emoji";
             search.addEventListener("input", () => {
                 const query = search.value.trim().toLowerCase();
-                if (!query) return selectCategory(data.categories[0], tabs.firstChild);
+                if (!query) return selectCategory(categories[0], tabs.firstChild);
                 for (const tab of tabs.children) tab.classList.remove("sr-active");
-                const all = data.categories.flatMap(c => c.emojis);
+                const all = categories.flatMap(c => c.emojis);
                 showEmojis(all.filter(e => e.names.some(n => n.includes(query))).slice(0, 200));
             });
             element.append(search);
@@ -285,7 +300,7 @@ module.exports = class StatusRotator {
             element.append(remove);
         }
 
-        selectCategory(data.categories[0], tabs.firstChild);
+        selectCategory(categories[0], tabs.firstChild);
         row.after(element);
         this.picker = { row, element };
         search?.focus();
@@ -326,12 +341,11 @@ module.exports = class StatusRotator {
             const row = el("div", "sr-row");
 
             const emoji = el("button", "sr-emoji-btn");
-            emoji.title = "Choose an emoji";
             fillEmojiButton(emoji, status.emoji);
-            emoji.addEventListener("click", () => this.toggleEmojiPicker(row, status.emoji, char => {
-                status.emoji = char;
+            emoji.addEventListener("click", () => this.toggleEmojiPicker(row, status.emoji, value => {
+                status.emoji = value;
                 this.saveSettings();
-                fillEmojiButton(emoji, char);
+                fillEmojiButton(emoji, value);
             }));
 
             const text = el("input", "sr-text");
@@ -408,6 +422,7 @@ function loadEmojiData() {
             icon,
             emojis: list.map(e => ({
                 char: e.surrogates,
+                value: e.surrogates,
                 name: e.uniqueName ?? e.names?.[0] ?? "",
                 names: e.names ?? [],
                 url: e.url
@@ -419,7 +434,7 @@ function loadEmojiData() {
         categories.push({
             id: "common",
             icon: "😀",
-            emojis: FALLBACK_EMOJIS.map(char => ({ char, name: "", names: [] }))
+            emojis: FALLBACK_EMOJIS.map(char => ({ char, value: char, name: "", names: [] }))
         });
     }
 
@@ -432,20 +447,88 @@ function loadEmojiData() {
     return emojiData;
 }
 
+// Un emoji de serveur est enregistré comme { id, name, animated }, un emoji unicode comme son caractère
+function isCustomEmoji(emoji) {
+    return typeof emoji === "object" && !!emoji?.id;
+}
+
+function hasNitro() {
+    return Boolean(BdApi.Webpack.getStore("UserStore")?.getCurrentUser()?.premiumType);
+}
+
+// Mêmes règles que Discord : Nitro obligatoire, et l'emoji doit être encore disponible sur son serveur
+function canUseCustomEmoji(emoji) {
+    if (!hasNitro()) return false;
+    const store = BdApi.Webpack.getStore("EmojiStore");
+    if (typeof store?.getCustomEmojiById !== "function") return true;
+    const found = store.getCustomEmojiById(emoji.id);
+    return !!found && found.available !== false;
+}
+
+function customEmojiUrl({ id, animated }) {
+    return `https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=48`;
+}
+
+// Un onglet par serveur avec ses emojis, aucun sans Nitro
+function loadCustomEmojiCategories() {
+    if (!hasNitro()) return [];
+    const emojiStore = BdApi.Webpack.getStore("EmojiStore");
+    const guilds = Object.values(BdApi.Webpack.getStore("GuildStore")?.getGuilds?.() ?? {});
+
+    const categories = [];
+    for (const guild of guilds) {
+        let list = [];
+        try { list = emojiStore?.getGuildEmoji?.(guild.id) ?? []; } catch {}
+        const emojis = list.filter(e => e.available !== false).map(e => ({
+            char: `:${e.name}:`,
+            value: { id: e.id, name: e.name, animated: Boolean(e.animated) },
+            name: e.name,
+            names: [e.name.toLowerCase()]
+        }));
+        if (!emojis.length) continue;
+        categories.push({
+            id: guild.id,
+            title: guild.name,
+            icon: guild.icon
+                ? { url: `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=64` }
+                : { letters: guild.name.split(/\s+/).map(w => w[0]).join("").slice(0, 3) },
+            emojis
+        });
+    }
+    return categories;
+}
+
 // Affiche l'emoji avec l'image Discord si disponible (Windows n'affiche pas les drapeaux en texte)
-function renderEmoji(char) {
-    const url = loadEmojiData().byChar.get(char)?.url;
-    if (!url) return el("span", "", char);
+function renderEmoji(value) {
+    const custom = isCustomEmoji(value);
+    const url = custom ? customEmojiUrl(value) : loadEmojiData().byChar.get(value)?.url;
+    if (!url) return el("span", "", value);
     const img = el("img", "sr-emoji-img");
     img.src = url;
-    img.alt = char;
+    img.alt = custom ? `:${value.name}:` : value;
     img.loading = "lazy";
     return img;
 }
 
-function fillEmojiButton(button, char) {
-    button.replaceChildren(renderEmoji(char || "😀"));
-    button.classList.toggle("sr-empty", !char);
+// Icône d'onglet : un emoji, l'icône d'un serveur ou ses initiales
+function renderIcon(icon) {
+    if (typeof icon === "string") return renderEmoji(icon);
+    if (icon.url) {
+        const img = el("img", "sr-guild-icon");
+        img.src = icon.url;
+        img.loading = "lazy";
+        return img;
+    }
+    return el("span", "sr-guild-letters", icon.letters);
+}
+
+function fillEmojiButton(button, value) {
+    button.replaceChildren(renderEmoji(value || "😀"));
+    button.classList.toggle("sr-empty", !value);
+    // Emoji de serveur sans Nitro (ou retiré du serveur) : grisé, le statut est envoyé sans lui
+    const locked = isCustomEmoji(value) && !canUseCustomEmoji(value);
+    button.classList.toggle("sr-locked", locked);
+    button.title = locked ? "This emoji needs Nitro or is no longer available: the status is set without it" : "Choose an emoji";
 }
 
 function el(tag, className = "", text = "") {

@@ -16,6 +16,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 ## StatusRotator
 
 - Set up as many custom statuses as you want, each with an emoji (picked from a real emoji picker), a text and an optional presence (Online, Idle, Do Not Disturb, Invisible).
+- With Nitro, the emoji picker also has your servers' custom emojis (animated ones too), like Discord's own status picker. Without Nitro they aren't offered, and a status that already has one is set without it.
 - The statuses rotate automatically at the interval of your choice (15 seconds minimum).
 - While you're playing a game, listening to music or streaming, the rotation pauses and your custom status is hidden. It resumes when the activity ends.
 - A "Skip to next" button jumps to the next status right away.
