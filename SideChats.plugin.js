@@ -2,7 +2,7 @@
  * @name SideChats
  * @author findert
  * @description Open other chats (any server channel, DM or group) live next to the main view, like split screens. Resize, fold and stack them as you like.
- * @version 1.0.14
+ * @version 1.0.15
  */
 
 const DEFAULT_SETTINGS = {
@@ -28,6 +28,8 @@ const COLLAPSED_WIDTH = 46;
 // Place minimale laissée au salon principal
 const MIN_MAIN_WIDTH = 420;
 const TYPING_DELAY = 9000;
+// Délai entre deux « marquer comme lu » d'une même fenêtre (chaque marquage met à jour toute l'interface de Discord)
+const ACK_DELAY = 3000;
 const DISCORD_EPOCH = 1420070400000n;
 
 const STORES = [
@@ -501,6 +503,7 @@ module.exports = class SideChats {
         for (const pane of this.panes ?? []) {
             this.clearTyping(pane);
             this.clearFiles(pane);
+            clearTimeout(pane.ackTimer);
             this.releaseMedia(pane.el.root);
         }
         this.mediaObserver?.disconnect();
@@ -644,6 +647,7 @@ module.exports = class SideChats {
 
     // Le bouton va en haut à droite du salon, avec les icônes de Discord (et le bouton Feed de ServerFeed)
     ensureButton(page) {
+        if (page && this.button?.isConnected && !this.button.classList.contains("sc-floating") && page.contains(this.button)) return;
         const toolbar = page?.querySelector('section [class*="toolbar_"]') ?? page?.querySelector('[class*="toolbar_"]');
         const button = this.button ??= this.createButton();
         if (toolbar) {
@@ -748,7 +752,7 @@ module.exports = class SideChats {
             width: Math.max(MIN_WIDTH, Number(saved.width) || DEFAULT_WIDTH),
             collapsed: Boolean(saved.collapsed),
             messages: [], loaded: false, loading: false, hasMore: true, error: null,
-            stick: true, unseen: 0, draft: "", replyTo: null, mentions: [], typing: new Map(), lastTyping: 0, lastHtml: "", files: []
+            stick: true, unseen: 0, draft: "", replyTo: null, mentions: [], typing: new Map(), lastTyping: 0, lastRows: null, files: []
         };
         pane.el = this.createPaneElement(pane);
         this.panes.push(pane);
@@ -807,6 +811,7 @@ module.exports = class SideChats {
         if (!pane) return;
         this.clearTyping(pane);
         this.clearFiles(pane);
+        clearTimeout(pane.ackTimer);
         if (this.suggest?.pane === pane) this.closeSuggestions();
         if (this.editing?.channelId === channelId) this.editing = null;
         this.releaseMedia(pane.el.root);
@@ -1296,13 +1301,24 @@ module.exports = class SideChats {
         }
         const last = pane.messages[pane.messages.length - 1];
         if (!this.settings.markRead || !last || pane.ackedId === last.id) return;
-        pane.ackedId = last.id;
-        try {
-            if (this.ackActions?.ack) this.ackActions.ack(pane.channelId);
-            else this.http.post({ url: `/channels/${pane.channelId}/messages/${last.id}/ack`, body: { token: null } }).catch(() => {});
-        } catch (error) {
-            console.error(`[${this.meta.name}] couldn't mark the conversation as read`, error);
-        }
+        // Salon très actif : un seul marquage pour tous les messages arrivés pendant le délai
+        if (pane.ackTimer) return;
+        const ack = () => {
+            const newest = pane.messages[pane.messages.length - 1];
+            if (!newest || pane.ackedId === newest.id || !this.panes.includes(pane)) return;
+            pane.ackedId = newest.id;
+            pane.ackTimer = setTimeout(() => {
+                pane.ackTimer = null;
+                if (this.isWatching(pane)) ack();
+            }, ACK_DELAY);
+            try {
+                if (this.ackActions?.ack) this.ackActions.ack(pane.channelId);
+                else this.http.post({ url: `/channels/${pane.channelId}/messages/${newest.id}/ack`, body: { token: null } }).catch(() => {});
+            } catch (error) {
+                console.error(`[${this.meta.name}] couldn't mark the conversation as read`, error);
+            }
+        };
+        ack();
     }
 
     onScroll(e) {
@@ -2281,7 +2297,8 @@ module.exports = class SideChats {
             pane.el.strip.title = `${info.name} — click to unfold`;
             pane.stripHtml = strip;
         }
-        pane.el.input.placeholder = `Message ${info.name}`;
+        const placeholder = `Message ${info.name}`;
+        if (pane.el.input.placeholder !== placeholder) pane.el.input.placeholder = placeholder;
     }
 
     renderReplyBar(pane) {
@@ -2296,10 +2313,11 @@ module.exports = class SideChats {
             const user = this.stores.UserStore?.getUser?.(id);
             return user ? this.getName(user, pane.guildId) : "Someone";
         });
-        pane.el.typing.textContent = !names.length ? ""
+        const text = !names.length ? ""
             : names.length === 1 ? `${names[0]} is typing…`
             : names.length <= 3 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} are typing…`
             : "Several people are typing…";
+        if (pane.el.typing.textContent !== text) pane.el.typing.textContent = text;
     }
 
     // keepBottom : des messages ont été ajoutés au-dessus, on garde la même distance avec le bas
@@ -2339,8 +2357,9 @@ module.exports = class SideChats {
             }
             pane.htmlCache = htmlCache;
         }
-        const html = rows.map(row => row.html).join("");
-        if (html === pane.lastHtml) return;
+        const previousRows = pane.lastRows;
+        if (previousRows && previousRows.length === rows.length
+            && rows.every((row, index) => row.key === previousRows[index].key && row.html === previousRows[index].html)) return;
 
         const { scroll, list } = pane.el;
         const fromBottom = scroll.scrollHeight - scroll.scrollTop;
@@ -2406,7 +2425,7 @@ module.exports = class SideChats {
         for (const node of dropped) this.releaseMedia(node);
         for (const sticker of pending) this.playSticker(sticker);
         pane.rows = next;
-        pane.lastHtml = html;
+        pane.lastRows = rows;
         const edit = list.querySelector(".sc-edit-input");
         if (edit) {
             if (edit.value !== (this.editing?.draft ?? "")) edit.value = this.editing?.draft ?? "";
@@ -2509,7 +2528,7 @@ module.exports = class SideChats {
 
         return `
             <div class="${classes.join(" ")}" data-message="${escapeHtml(message.id)}">
-                <img class="sc-avatar" src="${escapeHtml(getAvatar(author, member, guildId))}" alt="" data-action="profile" data-user="${escapeHtml(author.id ?? "")}">
+                <img class="sc-avatar" decoding="async" src="${escapeHtml(getAvatar(author, member, guildId))}" alt="" data-action="profile" data-user="${escapeHtml(author.id ?? "")}">
                 ${tools}
                 <div class="sc-body">
                     ${reply}${meta}
@@ -2547,7 +2566,7 @@ module.exports = class SideChats {
             if (!item) return "";
             return item.video
                 ? `<video class="${className}" src="${escapeHtml(item.preview)}" loop muted playsinline data-action="image" ${target} data-index="${item.index}"></video>`
-                : `<img class="${className}" src="${escapeHtml(item.preview)}" alt="" data-action="image" ${target} data-index="${item.index}">`;
+                : `<img class="${className}" decoding="async" loading="lazy" src="${escapeHtml(item.preview)}" alt="" data-action="image" ${target} data-index="${item.index}">`;
         };
         const linked = (url, html) => url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${html}</a>` : html;
         const color = embed.color != null ? ` style="--sc-embed-color: #${embed.color.toString(16).padStart(6, "0")}"` : "";
@@ -2735,7 +2754,7 @@ module.exports = class SideChats {
             return keep(`<span class="sc-mention" data-action="jump" data-guild="${escapeHtml(channel.guild_id ?? "@me")}" data-channel="${id}">#${escapeHtml(channel.name ?? "channel")}</span>`);
         });
         raw = raw.replace(/<(a?):(\w+):(\d+)>/g, (_, animated, name, id) =>
-            keep(`<img class="sc-emoji" alt=":${escapeHtml(name)}:" src="https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=48">`));
+            keep(`<img class="sc-emoji" decoding="async" alt=":${escapeHtml(name)}:" src="https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=48">`));
         raw = raw.replace(/<t:(-?\d+)(?::([tTdDfFR]))?>/g, (_, time, style) =>
             keep(`<span class="sc-timestamp">${escapeHtml(formatTimestamp(Number(time) * 1000, style))}</span>`));
 
@@ -2960,14 +2979,14 @@ function renderStickers(message, deleted = message.scDeleted) {
     if (!message.sticker_items?.length || deleted) return "";
     return `<div class="sc-stickers">${message.sticker_items.map(sticker => sticker.format_type === 3
         ? `<div class="sc-sticker sc-lottie" data-sticker="${escapeHtml(sticker.id)}" data-key="${escapeHtml(`${message.id}:${sticker.id}`)}" title="${escapeHtml(sticker.name)}"><i>Sticker: ${escapeHtml(sticker.name)}</i></div>`
-        : `<img class="sc-sticker" src="https://media.discordapp.net/stickers/${escapeHtml(sticker.id)}.${sticker.format_type === 4 ? "gif" : "png"}?size=160" alt="${escapeHtml(sticker.name)}" title="${escapeHtml(sticker.name)}">`).join("")}</div>`;
+        : `<img class="sc-sticker" decoding="async" loading="lazy" src="https://media.discordapp.net/stickers/${escapeHtml(sticker.id)}.${sticker.format_type === 4 ? "gif" : "png"}?size=160" alt="${escapeHtml(sticker.name)}" title="${escapeHtml(sticker.name)}">`).join("")}</div>`;
 }
 
 // Images jointes (fichiers et aperçus de liens) en miniatures, vidéos avec un lecteur, autres fichiers en lien
 function renderAttachments(message, images, target) {
     const items = images.map(image => image.video
         ? `<video src="${escapeHtml(image.preview)}" loop muted playsinline data-action="image" ${target} data-index="${image.index}"></video>`
-        : `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${image.index}">`);
+        : `<img decoding="async" loading="lazy" src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${image.index}">`);
     for (const file of message.attachments ?? []) {
         if (isImageFile(file)) continue;
         if (file.content_type?.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(file.filename ?? "")) {
