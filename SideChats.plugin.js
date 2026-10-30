@@ -2,7 +2,7 @@
  * @name SideChats
  * @author findert
  * @description Open other chats (any server channel, DM or group) live next to the main view, like split screens. Resize, fold and stack them as you like.
- * @version 1.0.7
+ * @version 1.0.8
  */
 
 const DEFAULT_SETTINGS = {
@@ -207,6 +207,30 @@ const CSS = `
 .sc-attachments img, .sc-attachments video { max-width: min(320px, 100%); max-height: 240px; border-radius: 6px; cursor: zoom-in; }
 .sc-attachments video.sc-video { cursor: auto; background: #000; }
 .sc-file { font-size: 13px; color: var(--text-link, #00a8fc); }
+.sc-body > .sc-text:empty { display: none; }
+.sc-forward { margin-top: 4px; padding-left: 10px; border-left: 3px solid color-mix(in srgb, var(--interactive-normal, #b5bac1) 35%, transparent); }
+.sc-forward-label { font-size: 12px; font-style: italic; color: var(--text-muted, #949ba4); margin-bottom: 2px; }
+.sc-embed {
+    display: flex; gap: 12px; max-width: 432px; margin-top: 4px; padding: 8px 12px 10px; border-radius: 4px; box-sizing: border-box;
+    border-left: 4px solid var(--sc-embed-color, color-mix(in srgb, var(--interactive-normal, #b5bac1) 30%, transparent));
+    background: var(--background-base-lower, #2b2d31); font-size: 13px; overflow: hidden;
+}
+.sc-embed-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sc-embed-provider { font-size: 11px; color: var(--text-muted, #949ba4); }
+.sc-embed-author { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--header-primary, #f2f3f5); }
+.sc-embed-author img { width: 20px; height: 20px; border-radius: 50%; }
+.sc-embed-title { font-weight: 600; color: var(--header-primary, #f2f3f5); }
+.sc-embed a { color: var(--text-link, #00a8fc); }
+.sc-embed-author a { color: inherit; }
+.sc-embed-desc, .sc-embed-field > div { word-break: break-word; }
+.sc-embed-fields { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.sc-embed-field { flex: 1 1 100%; min-width: 0; }
+.sc-embed-field.sc-inline { flex: 1 1 110px; }
+.sc-embed-field > b { display: block; font-size: 12px; }
+.sc-embed-image { max-width: 100%; max-height: 260px; border-radius: 4px; margin-top: 4px; cursor: zoom-in; align-self: flex-start; }
+.sc-embed-thumb { flex: none; width: 72px; height: 72px; object-fit: contain; border-radius: 4px; cursor: zoom-in; }
+.sc-embed-footer { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted, #949ba4); }
+.sc-embed-footer img { width: 18px; height: 18px; border-radius: 50%; }
 .sc-stickers { display: flex; gap: 6px; margin-top: 4px; }
 .sc-sticker { width: 140px; height: 140px; object-fit: contain; }
 .sc-lottie:not(.sc-ready) { width: auto; height: auto; }
@@ -2169,6 +2193,7 @@ module.exports = class SideChats {
         if (own) classes.push("sc-own");
         if (this.mentionsMe(message, guildId)) classes.push("sc-mentioned");
         const target = `data-channel="${escapeHtml(message.channel_id)}" data-message="${escapeHtml(message.id)}"`;
+        const images = getImages(message);
         const editing = this.editing?.messageId === message.id;
         const tools = message.scDeleted || editing ? "" : `
             <div class="sc-msg-tools">
@@ -2189,7 +2214,7 @@ module.exports = class SideChats {
         const member = message.webhook_id ? null : this.getMember(author.id, guildId);
         const color = member?.colorString ? ` style="color: ${escapeHtml(member.colorString)}"` : "";
         const reply = message.referenced_message
-            ? `<div class="sc-reply">↪ <span><b>${escapeHtml(this.getName(message.referenced_message.author ?? {}, guildId))}</b> ${escapeHtml(stripText(this.plainText(message.referenced_message, guildId)))}</span></div>`
+            ? `<div class="sc-reply">↪ <span><b>${escapeHtml(this.getName(message.referenced_message.author ?? {}, guildId))}</b> ${escapeHtml(stripText(this.plainText(message.referenced_message, guildId)) || previewFallback(message.referenced_message))}</span></div>`
             : "";
         const meta = grouped ? "" : `
             <div class="sc-meta">
@@ -2210,10 +2235,57 @@ module.exports = class SideChats {
                             <div class="sc-edit-hint">Escape to <span data-action="cancel-edit">cancel</span> • Enter to <span data-action="save-edit">save</span></div>
                         </div>`
                         : `<div class="sc-text">${this.renderContent(message, guildId)}${message.edited_timestamp ? ` <span class="sc-edited">(edited)</span>` : ""}</div>`}
-                    ${renderStickers(message)}
-                    ${renderAttachments(message, target)}
+                    ${this.renderExtras(message, message, images, target, guildId)}
+                    ${(message.message_snapshots ?? []).map(snapshot => snapshot?.message ? `
+                        <div class="sc-forward">
+                            <div class="sc-forward-label">↱ Forwarded</div>
+                            ${snapshot.message.content ? `<div class="sc-text">${this.renderContent({ ...snapshot.message, type: 0, embeds: [] }, guildId)}</div>` : ""}
+                            ${this.renderExtras(message, snapshot.message, images, target, guildId)}
+                        </div>` : "").join("")}
                     ${reactions}
                 </div>
+            </div>`;
+    }
+
+    // Stickers, pièces jointes et embeds d'une partie du message (lui-même ou un message transféré).
+    // Les images sont numérotées sur tout le message, pour que la visionneuse retrouve la bonne
+    renderExtras(message, part, images, target, guildId) {
+        const own = images.filter(image => image.part === part);
+        const cards = (part.embeds ?? []).filter(isCardEmbed).map(embed => this.renderEmbed(message, embed, own, target, guildId));
+        return renderStickers(part, message.scDeleted) + renderAttachments(part, own.filter(image => !image.card), target) + cards.join("");
+    }
+
+    // Embed complet comme dans Discord : barre de couleur, auteur, titre, description, champs, image et pied
+    renderEmbed(message, embed, images, target, guildId) {
+        const markdown = text => this.renderContent({ content: text, mentions: message.mentions }, guildId);
+        const image = (kind, className) => {
+            const item = images.find(entry => entry.embed === embed && entry.kind === kind);
+            if (!item) return "";
+            return item.video
+                ? `<video class="${className}" src="${escapeHtml(item.preview)}" autoplay loop muted playsinline data-action="image" ${target} data-index="${item.index}"></video>`
+                : `<img class="${className}" src="${escapeHtml(item.preview)}" alt="" data-action="image" ${target} data-index="${item.index}">`;
+        };
+        const linked = (url, html) => url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${html}</a>` : html;
+        const color = embed.color != null ? ` style="--sc-embed-color: #${embed.color.toString(16).padStart(6, "0")}"` : "";
+        // Vidéos (YouTube...) et liens sans texte : la miniature s'affiche en grand
+        const bigThumb = embed.type === "video" || (!embed.image && !embed.description && !embed.fields?.length);
+        const footer = [embed.footer?.text ? escapeHtml(embed.footer.text) : "", embed.timestamp ? escapeHtml(formatTimestamp(Date.parse(embed.timestamp), "f")) : ""].filter(Boolean);
+        const footerIcon = embed.footer?.proxy_icon_url ?? embed.footer?.icon_url;
+        const authorIcon = embed.author?.proxy_icon_url ?? embed.author?.icon_url;
+        return `
+            <div class="sc-embed"${color}>
+                <div class="sc-embed-main">
+                    ${embed.provider?.name ? `<div class="sc-embed-provider">${linked(embed.provider.url, escapeHtml(embed.provider.name))}</div>` : ""}
+                    ${embed.author?.name ? `<div class="sc-embed-author">${authorIcon ? `<img src="${escapeHtml(authorIcon)}" alt="">` : ""}${linked(embed.author.url, escapeHtml(embed.author.name))}</div>` : ""}
+                    ${embed.title ? `<div class="sc-embed-title">${linked(embed.url, escapeHtml(embed.title))}</div>` : ""}
+                    ${embed.description ? `<div class="sc-embed-desc sc-text">${markdown(embed.description)}</div>` : ""}
+                    ${embed.fields?.length ? `<div class="sc-embed-fields">${embed.fields.map(field => `
+                        <div class="sc-embed-field${field.inline ? " sc-inline" : ""}"><b>${markdown(field.name ?? "")}</b><div class="sc-text">${markdown(field.value ?? "")}</div></div>`).join("")}</div>` : ""}
+                    ${image("image", "sc-embed-image")}
+                    ${bigThumb ? image("thumbnail", "sc-embed-image") : ""}
+                    ${footer.length ? `<div class="sc-embed-footer">${footerIcon ? `<img src="${escapeHtml(footerIcon)}" alt="">` : ""}<span>${footer.join(" • ")}</span></div>` : ""}
+                </div>
+                ${bigThumb ? "" : image("thumbnail", "sc-embed-thumb")}
             </div>`;
     }
 
@@ -2386,11 +2458,8 @@ module.exports = class SideChats {
         // Les repères peuvent en contenir d'autres (texte d'un lien) : on remplace jusqu'à ce qu'il n'en reste plus
         for (let i = 0; i < 3 && html.includes("\u0000"); i++) html = html.replace(/\u0000(\d+)\u0000/g, (_, index) => stash[index]);
 
-        if (!html && message.embeds?.length && !message.embeds.some(embed => embed.thumbnail || embed.image)) {
-            html = `<i>${escapeHtml(message.embeds[0].title ?? message.embeds[0].description ?? "Embed")}</i>`;
-        }
         // Messages système (appel, membre ajouté au groupe, épinglé…) : une ligne en italique
-        if (!html && message.type && message.type !== 19 && !message.attachments?.length && !message.sticker_items?.length) {
+        if (!html && message.type && message.type !== 19 && !message.message_snapshots?.length && !message.attachments?.length && !message.sticker_items?.length) {
             html = `<i class="sc-edited">${escapeHtml(SYSTEM_MESSAGES[message.type] ?? "System message")}</i>`;
         }
         return html;
@@ -2554,23 +2623,45 @@ function isImageFile(file) {
     return file.content_type?.startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(file.filename ?? "");
 }
 
-// Toutes les images d'un message (pièces jointes puis embeds), dans l'ordre d'affichage
+// Toutes les images d'un message (pièces jointes puis embeds, puis celles des messages transférés),
+// dans l'ordre d'affichage. Chacune sait de quelle partie et de quel embed elle vient
 function getImages(message) {
     const images = [];
-    for (const file of message.attachments ?? []) {
-        if (isImageFile(file)) images.push({ preview: file.proxy_url ?? file.url, full: file.proxy_url ?? file.url, original: file.url ?? file.proxy_url });
-    }
-    for (const embed of message.embeds ?? []) {
-        const video = embed.type === "gifv" ? embed.video : null;
-        if (video?.proxy_url || video?.url) {
-            const src = video.proxy_url ?? video.url;
-            images.push({ video: true, preview: src, full: src, original: embed.url ?? video.url ?? src });
-            continue;
+    const add = (part, image) => images.push({ ...image, part, index: images.length });
+    const parts = [message, ...(message.message_snapshots ?? []).map(snapshot => snapshot?.message).filter(Boolean)];
+    for (const part of parts) {
+        for (const file of part.attachments ?? []) {
+            if (isImageFile(file)) add(part, { preview: file.proxy_url ?? file.url, full: file.proxy_url ?? file.url, original: file.url ?? file.proxy_url });
         }
-        const image = embed.image ?? embed.thumbnail;
-        if (image?.proxy_url || image?.url) images.push({ preview: image.proxy_url ?? image.url, full: image.proxy_url ?? image.url, original: image.url ?? image.proxy_url });
+        for (const embed of part.embeds ?? []) {
+            const card = isCardEmbed(embed);
+            const video = embed.type === "gifv" ? embed.video : null;
+            if (video?.proxy_url || video?.url) {
+                const src = video.proxy_url ?? video.url;
+                add(part, { video: true, preview: src, full: src, original: embed.url ?? video.url ?? src, embed, card, kind: "image" });
+                continue;
+            }
+            for (const kind of card ? ["image", "thumbnail"] : [embed.image ? "image" : "thumbnail"]) {
+                const image = embed[kind];
+                if (image?.proxy_url || image?.url) add(part, { preview: image.proxy_url ?? image.url, full: image.proxy_url ?? image.url, original: image.url ?? image.proxy_url, embed, card, kind });
+            }
+        }
     }
     return images;
+}
+
+// Embed avec du texte (lien, article, vidéo, bot...) : affiché en carte. Les autres (image ou GIF seul) en miniature
+function isCardEmbed(embed) {
+    return !["image", "gifv"].includes(embed.type)
+        && Boolean(embed.title || embed.description || embed.fields?.length || embed.author?.name || embed.footer?.text);
+}
+
+// Texte d'aperçu d'un message sans texte (réponse à un embed ou à un message transféré)
+function previewFallback(message) {
+    if (message?.message_snapshots?.length) return "Forwarded message";
+    const embed = message?.embeds?.find(item => item.title || item.description || item.author?.name);
+    if (embed) return stripText(embed.title ?? embed.description ?? embed.author.name);
+    return message?.attachments?.length || message?.embeds?.length ? "Click to see attachment" : "";
 }
 
 // Une vidéo est reconnue d'un affichage à l'autre par son message et son adresse
@@ -2580,18 +2671,18 @@ function videoKey(video) {
 
 // Stickers en image (PNG, APNG animé ou GIF). Ceux en Lottie (les stickers officiels de Discord) sont animés
 // ensuite par le lecteur de Discord ; en attendant (ou s'il manque) on écrit leur nom
-function renderStickers(message) {
-    if (!message.sticker_items?.length || message.scDeleted) return "";
+function renderStickers(message, deleted = message.scDeleted) {
+    if (!message.sticker_items?.length || deleted) return "";
     return `<div class="sc-stickers">${message.sticker_items.map(sticker => sticker.format_type === 3
         ? `<div class="sc-sticker sc-lottie" data-sticker="${escapeHtml(sticker.id)}" data-key="${escapeHtml(`${message.id}:${sticker.id}`)}" title="${escapeHtml(sticker.name)}"><i>Sticker: ${escapeHtml(sticker.name)}</i></div>`
         : `<img class="sc-sticker" src="https://media.discordapp.net/stickers/${escapeHtml(sticker.id)}.${sticker.format_type === 4 ? "gif" : "png"}?size=160" alt="${escapeHtml(sticker.name)}" title="${escapeHtml(sticker.name)}">`).join("")}</div>`;
 }
 
 // Images jointes (fichiers et aperçus de liens) en miniatures, vidéos avec un lecteur, autres fichiers en lien
-function renderAttachments(message, target) {
-    const items = getImages(message).map((image, index) => image.video
-        ? `<video src="${escapeHtml(image.preview)}" autoplay loop muted playsinline data-action="image" ${target} data-index="${index}"></video>`
-        : `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${index}">`);
+function renderAttachments(message, images, target) {
+    const items = images.map(image => image.video
+        ? `<video src="${escapeHtml(image.preview)}" autoplay loop muted playsinline data-action="image" ${target} data-index="${image.index}"></video>`
+        : `<img src="${escapeHtml(image.preview)}" alt="" data-action="image" ${target} data-index="${image.index}">`);
     for (const file of message.attachments ?? []) {
         if (isImageFile(file)) continue;
         if (file.content_type?.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(file.filename ?? "")) {
