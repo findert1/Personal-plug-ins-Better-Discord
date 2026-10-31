@@ -39,7 +39,9 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 ## ChannelGrid
 
 - Text channels are shown as tiles, grouped by category. Click a category name to fold it.
+- The threads you've joined are listed inside their channel's tile, with their unread state and mentions, like in Discord's list. The thread you're reading is shown too.
 - Voice channels are full-width cards listing who is connected, with their server tag, speaking rings, mute/deafen/camera/live indicators and the game they are playing. Click a member to open their profile card, or hover someone who is live and click **Watch** to open their stream.
+- Voice channel statuses are shown under the channel name. In the voice channel you're connected to, click the status (or **Set a channel status**) to change it, if the server lets you.
 - The server's boost goal and Discord's shortcuts (Browse Channels, Events, Members...) are shown at the top of the grid.
 - Unread channels are highlighted, mentions get a red badge, and "New unreads" / "New mentions" buttons jump to unread channels outside the view. Discord's own unread bar is hidden so they don't overlap.
 - Right-click a channel or a voice member to get Discord's usual context menu, even in categories folded in the normal list.

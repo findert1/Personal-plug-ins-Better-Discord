@@ -2,7 +2,7 @@
  * @name ChannelGrid
  * @author findert
  * @description Replaces the long server channel list with a wider, cleaner grid of channel tiles grouped by category.
- * @version 1.1.3
+ * @version 1.2.0
  */
 
 const DEFAULT_SETTINGS = {
@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS = {
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 640;
 const VIEW_CHANNEL = 1n << 10n;
+const SET_VOICE_CHANNEL_STATUS = 1n << 48n;
+const STATUS_MAX_LENGTH = 500;
 const VOICE_TYPES = new Set([2, 13]);
 const SCROLL_METHODS = ["scrollTo", "scroll", "scrollBy"];
 // Menus clic droit et cartes de profil de Discord
@@ -35,17 +37,20 @@ const ICONS = {
     16: `${SVG_OPEN}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg>`
 };
 const CHEVRON = `${SVG_OPEN}<path d="m6 9 6 6 6-6"/></svg>`;
+const PENCIL = `${SVG_OPEN}<path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg>`;
 // Icônes d'état des membres en vocal (micro coupé, casque coupé, caméra)
 const MIC_OFF = `${SVG_OPEN}<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 11 4.6M12 17.5V21M3 3l18 18"/></svg>`;
 const DEAF = `${SVG_OPEN}<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/><path d="M3 3l18 18"/></svg>`;
 const GAMEPAD = `${SVG_OPEN}<rect x="2" y="7" width="20" height="11" rx="5"/><path d="M7 11v3M5.5 12.5h3M16 12h.01M18 14h.01"/></svg>`;
 const LOCK = `${SVG_OPEN}<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
 const CAMERA = `${SVG_OPEN}<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/></svg>`;
+// Icône des fils (threads)
+const THREAD = `${SVG_OPEN}<path d="M5 4h14v9h-7l-4 3.5V13H5V4Z"/><path d="M9 20h6"/></svg>`;
 
 const STORES = [
     "GuildChannelStore", "ChannelStore", "ReadStateStore", "SelectedChannelStore", "SelectedGuildStore",
     "VoiceStateStore", "UserGuildSettingsStore", "PermissionStore", "UserStore", "GuildMemberStore",
-    "PresenceStore", "ApplicationStore"
+    "PresenceStore", "ApplicationStore", "ActiveJoinedThreadsStore", "JoinedThreadsStore"
 ];
 
 const CSS = `
@@ -143,6 +148,19 @@ const CSS = `
     width: 4px; height: 8px; border-radius: 0 4px 4px 0; background: var(--interactive-active, #fff);
 }
 .cg-tile.cg-muted { opacity: .45; }
+/* Un salon avec des fils prend deux colonnes pour garder leurs noms lisibles */
+.cg-tile.cg-has-threads { grid-column: span 2; }
+.cg-threads { display: flex; flex-direction: column; gap: 2px; margin: -2px -6px -4px; }
+.cg-thread {
+    display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 6px; border-radius: 6px;
+    font-weight: 500; color: var(--channels-default, #949ba4);
+}
+.cg-thread .cg-name { font-size: 13px; }
+.cg-thread svg { width: 14px; height: 14px; flex: none; opacity: .7; }
+.cg-thread:hover { background: color-mix(in srgb, var(--interactive-normal, #b5bac1) 12%, transparent); color: var(--interactive-hover, #dbdee1); }
+.cg-thread.cg-selected { background: var(--background-modifier-selected, rgba(78,80,88,.6)); color: var(--interactive-active, #fff); }
+.cg-thread.cg-unread { color: var(--interactive-active, #fff); font-weight: 600; }
+.cg-thread.cg-muted { opacity: .45; }
 
 .cg-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .cg-line svg { width: 16px; height: 16px; flex: none; opacity: .8; }
@@ -167,6 +185,22 @@ const CSS = `
 .cg-vc-head svg { width: 16px; height: 16px; flex: none; opacity: .8; }
 .cg-vc.cg-connected .cg-vc-head { color: var(--interactive-active, #fff); }
 .cg-vc.cg-occupied .cg-vc-head .cg-name { color: var(--interactive-hover, #dbdee1); }
+/* Statut du salon vocal, sous son nom ; modifiable dans le salon où on est connecté */
+.cg-vc-status {
+    display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 6px 4px 28px;
+    font-size: 12px; color: var(--channels-default, #949ba4);
+}
+.cg-vc-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cg-vc-status img { width: 14px; height: 14px; vertical-align: -2px; }
+.cg-vc-status[data-vc-status] { cursor: pointer; }
+.cg-vc-status[data-vc-status]:hover { color: var(--interactive-hover, #dbdee1); }
+.cg-vc-status svg { width: 12px; height: 12px; flex: none; }
+.cg-status-input {
+    width: 100%; box-sizing: border-box; padding: 10px; border-radius: 6px; font-size: 15px;
+    border: 1px solid var(--background-modifier-accent, #4e5058);
+    background: var(--background-tertiary, #1e1f22); color: var(--text-normal, #dbdee1);
+}
+.cg-status-input:focus { outline: none; border-color: var(--brand-500, #5865f2); }
 
 .cg-members {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -230,6 +264,26 @@ module.exports = class ChannelGrid {
         this.streamActions = Webpack.getByKeys("watchStreamAndTransitionToStream") ?? Webpack.getByKeys("watchStream");
         // Le dispatcher de Discord est accessible depuis n'importe quel store
         this.dispatcher = Webpack.getByKeys("dispatch", "subscribe") ?? this.stores.UserStore?._dispatcher;
+        // Module de Discord qui fait les requêtes à son API (avec ton compte déjà connecté)
+        // (on écarte « superagent », la librairie brute qui a les mêmes fonctions mais sans l'adresse de l'API)
+        this.http = Webpack.getByKeys("getAPIBaseURL", "get")
+            ?? Webpack.getModule(m => typeof m?.get === "function" && typeof m?.post === "function"
+                && typeof m?.put === "function" && typeof m?.patch === "function" && typeof m?.del === "function"
+                && !m.Request && !m.agent,
+            { searchExports: true });
+
+        // Statuts des salons vocaux : Discord les reçoit quand on ouvre un serveur, puis à chaque changement
+        this.voiceStatuses = new Map();
+        this.statusHandlers = {
+            CHANNEL_STATUSES: ({ channels }) => {
+                for (const { id, status } of channels ?? []) this.voiceStatuses.set(id, status ?? "");
+                this.onStoreChange();
+            },
+            VOICE_CHANNEL_STATUS_UPDATE: ({ id, status }) => {
+                this.voiceStatuses.set(id, status ?? "");
+                this.onStoreChange();
+            }
+        };
 
         if (!this.stores.GuildChannelStore || !this.transitionTo) {
             BdApi.UI.showToast("ChannelGrid: Discord modules not found", { type: "error" });
@@ -250,6 +304,7 @@ module.exports = class ChannelGrid {
             this.schedule();
         };
         for (const store of Object.values(this.stores)) store?.addChangeListener?.(this.onStoreChange);
+        for (const [type, handler] of Object.entries(this.statusHandlers)) this.dispatcher?.subscribe?.(type, handler);
 
         // Qui parle change en continu : on met juste à jour les anneaux verts, sans tout redessiner
         this.speakingStore = Webpack.getStore("SpeakingStore");
@@ -272,6 +327,7 @@ module.exports = class ChannelGrid {
         if (this.frame) cancelAnimationFrame(this.frame);
         this.frame = 0;
         for (const store of Object.values(this.stores ?? {})) store?.removeChangeListener?.(this.onStoreChange);
+        for (const [type, handler] of Object.entries(this.statusHandlers ?? {})) this.dispatcher?.unsubscribe?.(type, handler);
         this.speakingStore?.removeChangeListener?.(this.onSpeaking);
         this.detach();
         this.root?.remove();
@@ -576,19 +632,65 @@ module.exports = class ChannelGrid {
     }
 
     renderTile(state) {
-        const { channel } = state;
+        const { channel, threads } = state;
+        const threadSelected = threads.some(thread => thread.selected);
         const classes = ["cg-tile"];
-        if (state.selected) classes.push("cg-selected");
+        // Dans un fil, c'est le fil qui est mis en avant, pas tout le salon
+        if (state.selected && !threadSelected) classes.push("cg-selected");
         if (state.unread && !state.muted) classes.push("cg-unread");
         if (state.muted) classes.push("cg-muted");
         if (state.hidden) classes.push("cg-hidden");
+        if (threads.length) classes.push("cg-has-threads");
 
         const lock = state.hidden ? `<span class="cg-lock" title="Hidden Channel">${LOCK}</span>` : "";
-        const badge = state.mentions ? `<span class="cg-badge">${state.mentions > 99 ? "99+" : state.mentions}</span>` : "";
+        const threadsHtml = threads.length
+            ? `<div class="cg-threads">${threads.map(thread => this.renderThread(thread)).join("")}</div>`
+            : "";
         return `
             <div class="${classes.join(" ")}" data-channel="${escapeHtml(channel.id)}" title="${escapeHtml(channel.name)}">
-                <div class="cg-line">${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${badge}${lock}</div>
+                <div class="cg-line">${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${renderBadge(state.mentions)}${lock}</div>
+                ${threadsHtml}
             </div>`;
+    }
+
+    renderThread(thread) {
+        const classes = ["cg-thread"];
+        if (thread.selected) classes.push("cg-selected");
+        if (thread.unread && !thread.muted) classes.push("cg-unread");
+        if (thread.muted) classes.push("cg-muted");
+        return `
+            <div class="${classes.join(" ")}" data-channel="${escapeHtml(thread.channel.id)}" title="${escapeHtml(thread.channel.name)}">
+                ${THREAD}<span class="cg-name">${escapeHtml(thread.channel.name)}</span>${renderBadge(thread.mentions)}
+            </div>`;
+    }
+
+    // Fils du salon que l'utilisateur a rejoints et qui sont encore actifs, comme dans la liste
+    // de Discord, plus le fil ouvert en ce moment même s'il ne l'a pas rejoint
+    getThreads(guildId, channel) {
+        if (VOICE_TYPES.has(channel.type)) return [];
+        const { ActiveJoinedThreadsStore, JoinedThreadsStore, ReadStateStore, SelectedChannelStore, ChannelStore } = this.stores;
+
+        let joined = {};
+        try { joined = ActiveJoinedThreadsStore?.getActiveJoinedThreadsForParent?.(guildId, channel.id) ?? {}; } catch {}
+        const threads = new Map();
+        for (const entry of Object.values(joined)) {
+            const thread = entry?.channel ?? entry;
+            if (thread?.id) threads.set(thread.id, thread);
+        }
+        const selectedId = SelectedChannelStore?.getChannelId?.();
+        const selected = selectedId && ChannelStore.getChannel(selectedId);
+        if (selected?.isThread?.() && selected.parent_id === channel.id) threads.set(selected.id, selected);
+
+        return [...threads.values()]
+            .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+            .map(thread => ({
+                channel: thread,
+                selected: thread.id === selectedId,
+                muted: Boolean(JoinedThreadsStore?.isMuted?.(thread.id)),
+                unread: Boolean(ReadStateStore?.hasUnread?.(thread.id)),
+                mentions: ReadStateStore?.getMentionCount?.(thread.id) ?? 0
+            }))
+            .filter(thread => !this.settings.hideMuted || !thread.muted || thread.selected);
     }
 
     // Un vocal est une carte pleine largeur : en-tête cliquable, puis la liste des membres
@@ -615,8 +717,67 @@ module.exports = class ChannelGrid {
                 <div class="cg-vc-head" data-channel="${escapeHtml(channel.id)}" title="${escapeHtml(channel.name)}">
                     ${ICONS[channel.type]}<span class="cg-name">${escapeHtml(channel.name)}</span>${count}${lock}
                 </div>
+                ${this.renderVoiceStatus(state)}
                 ${members}
             </div>`;
+    }
+
+    // Comme Discord : le statut s'affiche sous le nom du salon, et dans le salon où on est
+    // connecté, un clic permet de le changer si on en a la permission
+    renderVoiceStatus(state) {
+        const status = this.getVoiceStatus(state.channel);
+        const editable = this.canSetVoiceStatus(state);
+        if (!status && !editable) return "";
+        const text = status ? renderStatusText(status) : "Set a channel status";
+        return editable
+            ? `<div class="cg-vc-status" data-vc-status="${escapeHtml(state.channel.id)}" title="${escapeHtml(status || "Set a channel status")}">
+                   <span class="cg-vc-status-text">${text}</span>${PENCIL}
+               </div>`
+            : `<div class="cg-vc-status" title="${escapeHtml(status)}"><span class="cg-vc-status-text">${text}</span></div>`;
+    }
+
+    getVoiceStatus(channel) {
+        return this.voiceStatuses.get(channel.id) ?? channel.status ?? "";
+    }
+
+    canSetVoiceStatus(state) {
+        if (!state.connected || !this.http) return false;
+        try {
+            return Boolean(this.stores.PermissionStore?.can(SET_VOICE_CHANNEL_STATUS, state.channel));
+        } catch {
+            return false;
+        }
+    }
+
+    // Fenêtre pour écrire le statut, comme celle de Discord ; vide = statut retiré
+    editVoiceStatus(channelId) {
+        const channel = this.stores.ChannelStore.getChannel(channelId);
+        if (!channel) return;
+        const { React } = BdApi;
+        let value = this.getVoiceStatus(channel);
+        const save = async () => {
+            const status = value.trim();
+            try {
+                await this.http.put({ url: `/channels/${channelId}/voice-status`, body: { status } });
+                this.voiceStatuses.set(channelId, status);
+                this.onStoreChange();
+            } catch (error) {
+                const reason = error?.body?.message ?? (error?.status ? `HTTP ${error.status}` : error?.message ?? String(error));
+                BdApi.UI.showToast(`ChannelGrid: couldn't set the status (${reason})`, { type: "error" });
+            }
+        };
+        BdApi.UI.showConfirmationModal("Set a channel status", React.createElement("input", {
+            className: "cg-status-input",
+            defaultValue: value,
+            maxLength: STATUS_MAX_LENGTH,
+            placeholder: "What's going on here?",
+            autoFocus: true,
+            onChange: e => { value = e.target.value; }
+        }), {
+            confirmText: "Save",
+            cancelText: "Cancel",
+            onConfirm: save
+        });
     }
 
     renderMember(guildId, { user, voiceState }) {
@@ -680,6 +841,7 @@ module.exports = class ChannelGrid {
             channel,
             muted,
             voiceUsers,
+            threads: this.getThreads(guildId, channel),
             selected: channel.id === selected,
             hidden: this.isHiddenChannel(channel),
             connected: channel.id === this.stores.SelectedChannelStore?.getVoiceChannelId?.(),
@@ -724,7 +886,7 @@ module.exports = class ChannelGrid {
         if (!scroll || this.settings.view !== "grid") return result;
 
         const view = scroll.getBoundingClientRect();
-        for (const tile of scroll.querySelectorAll(".cg-tile.cg-unread, .cg-tile:has(.cg-badge)")) {
+        for (const tile of scroll.querySelectorAll(".cg-tile.cg-unread, .cg-tile:has(.cg-badge), .cg-tile:has(.cg-thread.cg-unread)")) {
             const rect = tile.getBoundingClientRect();
             if (rect.bottom < view.top + 8) result.up.push(tile);
             else if (rect.top > view.bottom - 8) result.down.push(tile);
@@ -758,6 +920,12 @@ module.exports = class ChannelGrid {
         const jump = e.target.closest("[data-jump]");
         if (jump) {
             this.jumpToUnread(jump.dataset.jump);
+            return;
+        }
+
+        const statusLine = e.target.closest("[data-vc-status]");
+        if (statusLine) {
+            this.editVoiceStatus(statusLine.dataset.vcStatus);
             return;
         }
 
@@ -881,7 +1049,11 @@ module.exports = class ChannelGrid {
     // la catégorie le temps du menu, en cliquant dessus comme le ferait l'utilisateur.
     // Renvoie l'id de la catégorie dépliée, s'il y en a une
     async expandCategoryOf(channelId) {
-        const parentId = this.stores.ChannelStore?.getChannel?.(channelId)?.parent_id;
+        const { ChannelStore } = this.stores;
+        let channel = ChannelStore?.getChannel?.(channelId);
+        // Pour un fil, la catégorie est celle de son salon parent
+        if (channel?.isThread?.()) channel = ChannelStore.getChannel(channel.parent_id);
+        const parentId = channel?.parent_id;
         if (!parentId) return null;
         const category = await this.findNative(() => findNativeCategory(parentId));
         if (!category) return null;
@@ -1156,6 +1328,16 @@ function getAvatar(user, guildId) {
     } catch {
         return "https://cdn.discordapp.com/embed/avatars/0.png";
     }
+}
+
+// Texte du statut vocal, avec les emojis de serveur (<:nom:id>) affichés en image
+function renderStatusText(status) {
+    return escapeHtml(status).replace(/&lt;(a?):(\w+):(\d+)&gt;/g, (_, animated, name, id) =>
+        `<img src="https://cdn.discordapp.com/emojis/${id}.${animated ? "gif" : "webp"}?size=32" alt=":${name}:">`);
+}
+
+function renderBadge(mentions) {
+    return mentions ? `<span class="cg-badge">${mentions > 99 ? "99+" : mentions}</span>` : "";
 }
 
 function escapeHtml(text) {
