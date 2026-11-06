@@ -11,6 +11,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | [ServerFeed](ServerFeed.plugin.js) | A Twitter-like feed of every unread message in the server, with context, so you can catch up without opening each channel. |
 | [SideChats](SideChats.plugin.js) | Open other chats (any server channel, DM or group) live next to the main view, like split screens, and talk in them. |
 | [EnglishFixer](EnglishFixer.plugin.js) | Press a shortcut to preview your message with its English typos and mistakes fixed, then accept or skip the corrections. |
+| [FrenchFixer](FrenchFixer.plugin.js) | The same as EnglishFixer, for French: preview your message with its typos, missing accents and grammar mistakes fixed. |
 | [HelloWorld](HelloWorld.plugin.js) | Minimal example plugin that shows a "Hello World" toast. |
 
 ## StatusRotator
@@ -87,6 +88,15 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Works in Discord's message box and in other plugins' text boxes, like ServerFeed's.
 - Settings: shortcut, show or hide the button, US or UK English, punctuation, capitalization and style fixes.
 - Your message is only sent to LanguageTool when you press the shortcut.
+
+## FrenchFixer
+
+- Works like EnglishFixer, for messages written in French. Press **Ctrl+Shift+O** (configurable) or click the **FR** button on the right of the message bar.
+- Fixes typos, missing accents ("deja" → "déjà"), agreement and conjugation ("j'ai manger" → "j'ai mangé", "qu'il vient" → "qu'il vienne"), homophones and commas.
+- Leaves chat French alone by default: "je sais pas" stays as is, and French typography (space before ? ! : ;, curly apostrophes, « ») isn't forced. Both can be turned on in the settings.
+- Common abbreviations (mdr, tkt, jsp, stp...) are never corrected, and you can add your own.
+- Can be turned on at the same time as EnglishFixer, with a different shortcut and button.
+- Settings: shortcut, show or hide the button, French variant (France, Canada, Belgium, Switzerland), punctuation, capitalization, style (pleonasms like "monter en haut"), negations and typography.
 
 ## HelloWorld
 
