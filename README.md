@@ -5,7 +5,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | Plugin | Description |
 | --- | --- |
 | [StatusRotator](StatusRotator.plugin.js) | Rotates between multiple custom statuses at a set interval, and hides the status while playing, listening or streaming. |
-| [TextExpander](TextExpander.plugin.js) | Define your own commands (like `;gg`) that get replaced by full sentences when you send a message. |
+| [TextExpander](TextExpander.plugin.js) | Define your own commands (like `;gg`) that get replaced by full sentences when you send a message, with an optional preview. |
 | [MessageScreenshot](MessageScreenshot.plugin.js) | Right-click a message to copy it (or the last few messages) to your clipboard as a clean image. |
 | [ChannelGrid](ChannelGrid.plugin.js) | Replaces the long server channel list with a cleaner grid of channel tiles grouped by category. |
 | [ServerFeed](ServerFeed.plugin.js) | A Twitter-like feed of every unread message in the server, with context, so you can catch up without opening each channel. |
@@ -28,7 +28,11 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Define your own commands in the settings (for example `;gg` → "GG, well played! See you next time 👋").
 - A command is replaced only when it's typed as a separate word, so it never breaks other words. Longer commands take priority over shorter ones.
 - Works when sending and when editing a message.
-- It doesn't read what you type: the replacement only happens at the moment the message is sent or edited.
+- Preview, chosen in the settings:
+  - **No preview** (default): commands are replaced when you send, like before.
+  - **While typing**: as soon as your message contains a command, a preview above the message bar shows it as it will be sent, with the replaced parts highlighted.
+  - **Before sending**: pressing Enter shows the preview first. Press Enter again to send, or Esc (or keep typing) to go back to editing.
+- Nothing leaves your computer: the preview is built locally, and the replacement itself happens when the message is sent or edited.
 
 ## MessageScreenshot
 
