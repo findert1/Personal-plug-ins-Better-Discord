@@ -6,6 +6,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | --- | --- |
 | [StatusRotator](StatusRotator.plugin.js) | Rotates between multiple custom statuses at a set interval, and hides the status while playing, listening or streaming. |
 | [TextExpander](TextExpander.plugin.js) | Define your own commands (like `;gg`) that get replaced by full sentences when you send a message, with an optional preview. |
+| [TextExpanderEnhanced](TextExpanderEnhanced.plugin.js) | Message templates with blanks to fill in: type a command, fill in a small form with a live preview, and the finished message is put in your message bar. |
 | [MessageScreenshot](MessageScreenshot.plugin.js) | Right-click a message to copy it (or the last few messages) to your clipboard as a clean image. |
 | [ChannelGrid](ChannelGrid.plugin.js) | Replaces the long server channel list with a cleaner grid of channel tiles grouped by category. |
 | [ServerFeed](ServerFeed.plugin.js) | A Twitter-like feed of every unread message in the server, with context, so you can catch up without opening each channel. |
@@ -34,6 +35,13 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
   - **While typing**: as soon as your message contains a command, a preview above the message bar shows it as it will be sent, with the replaced parts highlighted.
   - **Before sending**: pressing Enter shows the preview first. Press Enter again to send, or Esc (or keep typing) to go back to editing.
 - Nothing leaves your computer: the preview is built locally, and the replacement itself happens when the message is sent or edited.
+
+## TextExpanderEnhanced
+
+- Prepare message templates with blanks, like a skeleton to complete (event announcements, bug reports, welcome messages...).
+- Type a template's command (for example `;event`) at the end of your message and press **Tab** or **Enter**, or pick a template with the button in the message bar. A form opens with one box per blank and a live preview, then the finished message is put in your message bar so you can check it before sending.
+- Put a blank between braces wherever you want to fill something in: `{Title}`, `{Date}`, `{Who's coming}`... Each blank becomes a free text box in the form. The same blank used twice is filled in once.
+- Works alongside TextExpander: TextExpander is for instant replacements, TextExpanderEnhanced for messages you complete each time.
 
 ## MessageScreenshot
 
