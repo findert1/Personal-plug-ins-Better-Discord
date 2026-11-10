@@ -12,6 +12,7 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 | [SideChats](SideChats.plugin.js) | Open other chats (any server channel, DM or group) live next to the main view, like split screens, and talk in them. |
 | [EnglishFixer](EnglishFixer.plugin.js) | Press a shortcut to preview your message with its English typos and mistakes fixed, then accept or skip the corrections. |
 | [FrenchFixer](FrenchFixer.plugin.js) | The same as EnglishFixer, for French: preview your message with its typos, missing accents and grammar mistakes fixed. |
+| [AutoRename](AutoRename.plugin.js) | Automatically renames the files you upload (`IMG_2034.jpg`, `image.png`...) using a pattern with the date, channel, server and more. |
 | [HelloWorld](HelloWorld.plugin.js) | Minimal example plugin that shows a "Hello World" toast. |
 
 ## StatusRotator
@@ -101,6 +102,14 @@ Personal [BetterDiscord](https://betterdiscord.app) plugins by findert.
 - Common abbreviations (mdr, tkt, jsp, stp...) are never corrected, and you can add your own.
 - Can be turned on at the same time as EnglishFixer, with a different shortcut and button.
 - Settings: shortcut, show or hide the button, French variant (France, Canada, Belgium, Switzerland), punctuation, capitalization, style (pleonasms like "monter en haut"), negations and typography.
+
+## AutoRename
+
+- Every file you add to a message (with the + button, drag and drop or paste) is renamed before it is sent, following a pattern you choose. The extension is kept.
+- Default pattern: `{channel}_{date}_{time}`, so `IMG_2034.JPG` becomes `general_2026-11-10_14-32-05.jpg`.
+- Keywords: `{name}` (original name), `{date}`, `{time}`, `{timestamp}`, `{channel}` (the person's name in DMs), `{server}`, `{user}`, `{n}` (file number when sending several) and `{random}`. Click a keyword in the settings to add it, with a live example.
+- By default only generic names are renamed (`IMG_1234`, `image.png`, `Screenshot...`, `PXL_...`, pasted images): files you named yourself are left alone. This can be turned off.
+- Names are cleaned by default (spaces become `_`, accents and emojis removed). Two files of the same upload never get the same name, and spoiler files stay spoilers.
 
 ## HelloWorld
 
