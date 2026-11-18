@@ -2,7 +2,7 @@
  * @name TextExpanderEnhanced
  * @author findert
  * @description Message templates with blanks to fill in: type a command (like ;event), fill in a small form with a live preview, and the finished message is put in your message bar.
- * @version 1.0.1
+ * @version 1.0.2
  */
 
 const DEFAULT_SETTINGS = {
@@ -35,6 +35,16 @@ const CSS = `
     box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 14px; line-height: 1.4;
     display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow-y: auto;
 }
+.tee-form { overflow: hidden; }
+.tee-form > .tee-title, .tee-form > .tee-actions { flex: none; }
+/* Seuls les champs défilent : l'aperçu garde sa place. Côte à côte quand le formulaire est large */
+.tee-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.tee-body .tee-fields { flex: 1 1 auto; min-height: 60px; min-width: 0; overflow-y: auto; padding-right: 4px; align-content: start; }
+.tee-body .tee-preview { flex: none; max-height: 30vh; }
+.tee-wide .tee-body { flex-direction: row; }
+.tee-wide .tee-body .tee-fields { flex: 1 1 55%; }
+.tee-wide .tee-body .tee-preview { flex: 1 1 45%; max-height: none; align-self: stretch; overflow-y: auto;
+}
 .tee-title { display: flex; gap: 8px; font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--text-muted, #949ba4); }
 .tee-title span:last-child { margin-left: auto; font-weight: 500; text-transform: none; }
 .tee-fields { display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: start; }
@@ -48,7 +58,7 @@ const CSS = `
 .tee-popup textarea { resize: none; overflow: hidden; line-height: 1.4; }
 .tee-popup textarea:focus, .tee-panel input:focus, .tee-panel textarea:focus { outline: none; border-color: var(--brand-500, #5865f2); }
 .tee-preview {
-    white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word; overflow-y: auto; box-sizing: border-box;
     padding: 8px; border-radius: 4px; background: var(--background-tertiary, #1e1f22);
 }
 .tee-preview mark { background: color-mix(in srgb, var(--brand-500, #5865f2) 25%, transparent); color: inherit; border-radius: 3px; padding: 0 2px; }
@@ -217,7 +227,7 @@ module.exports = class TextExpanderEnhanced {
             return;
         }
 
-        const node = el("div", "tee-popup");
+        const node = el("div", "tee-popup tee-form");
         const title = el("div", "tee-title");
         title.append(el("span", "", template.name || "Template"), el("span", "", template.trigger || ""));
 
@@ -277,7 +287,9 @@ module.exports = class TextExpanderEnhanced {
         });
         for (const type of ["keyup", "keypress", "paste"]) node.addEventListener(type, e => e.stopPropagation());
 
-        node.append(title, grid, preview, actions);
+        const body = el("div", "tee-body");
+        body.append(grid, preview);
+        node.append(title, body, actions);
         updatePreview();
         this.showPopup("form", node, composer);
         inputs[0].focus();
@@ -299,6 +311,9 @@ module.exports = class TextExpanderEnhanced {
             node.style.width = `${Math.min(Math.max(360, rect.width), window.innerWidth - 16)}px`;
         }
         node.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+        // Toute la place libre au-dessus de la barre de message
+        node.style.maxHeight = `${Math.max(240, rect.top - 24)}px`;
+        if (kind === "form") node.classList.toggle("tee-wide", node.getBoundingClientRect().width >= 760);
     }
 
     closePopup(refocus) {
